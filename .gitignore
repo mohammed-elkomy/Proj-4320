@@ -1,0 +1,6 @@
+/proj-c/sample_res/*
+/proj-c/other proj/*
+/proj-py/progress_GA_*
+**/**.o
+proj-c/triangle_ga
+.idea
