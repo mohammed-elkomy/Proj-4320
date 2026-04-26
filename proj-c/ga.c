@@ -267,7 +267,11 @@ GAStats ga_step(GA *ga)
         if (ga->fitnesses[i] < current_best)
             current_best = ga->fitnesses[i];
 
-    if (current_best < ga->best_loss - 1e-7) {
+    int improved = STAGNATION_RELATIVE
+                   ? (current_best < ga->best_loss * (1.0 - STAGNATION_REL_TOL))
+                   : (current_best < ga->best_loss - STAGNATION_ABS_TOL);
+
+    if (improved) {
         ga->best_loss        = current_best;
         ga->stagnation_count = 0;
     } else {
@@ -280,9 +284,48 @@ GAStats ga_step(GA *ga)
                ga->generation);
     }
 
+
     profiler_add(ga->prof, BUCKET_OPTIMIZE, profiler_now() - t0);
 
     return ga_stats(ga);
+}
+
+int ga_save(const GA *ga, const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) { perror(path); return -1; }
+
+    fwrite(&ga->generation,       sizeof(int),    1,        f);
+    fwrite(&ga->best_loss,        sizeof(double), 1,        f);
+    fwrite(&ga->stagnation_count, sizeof(int),    1,        f);
+    fwrite(ga->population,        sizeof(double), POP_SIZE * N_GENES, f);
+    fwrite(ga->fitnesses,         sizeof(double), POP_SIZE, f);
+
+    fclose(f);
+    return 0;
+}
+
+int ga_load(GA *ga, const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;   /* file doesn't exist — not an error, just start fresh */
+
+    int ok = 1;
+    ok &= (fread(&ga->generation,       sizeof(int),    1,                  f) == 1);
+    ok &= (fread(&ga->best_loss,        sizeof(double), 1,                  f) == 1);
+    ok &= (fread(&ga->stagnation_count, sizeof(int),    1,                  f) == 1);
+    ok &= (fread(ga->population,        sizeof(double), POP_SIZE * N_GENES, f) == POP_SIZE * N_GENES);
+    ok &= (fread(ga->fitnesses,         sizeof(double), POP_SIZE,           f) == POP_SIZE);
+
+    fclose(f);
+
+    if (!ok) {
+        fprintf(stderr, "ga_load: checkpoint file '%s' is corrupted — starting fresh.\n", path);
+        return -1;
+    }
+
+    ga->done = 0;
+    return 0;
 }
 
 GAStats ga_stats(const GA *ga)
