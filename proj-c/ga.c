@@ -37,7 +37,7 @@ double compute_loss(const double *x, const Image *target, Image *scratch,
     return mse / n;
 }
 
-/* ── Ground truth ─────────────────────────────────────────────────────────── */
+/* ── Ground truth TESTING ONLY ────────────────────────────────────────────── */
 
 void build_ground_truth(Image *target_out, double *gt_x_out, Profiler *prof)
 {
