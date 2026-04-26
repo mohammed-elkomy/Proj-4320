@@ -1,0 +1,11 @@
+set(gsl-lite_VERSION @PACKAGE_VERSION@)
+
+@PACKAGE_INIT@
+
+@PACKAGE_DEPENDENCIES@
+
+include("${CMAKE_CURRENT_LIST_DIR}/gsl-liteTargets.cmake")
+
+
+
+@INCLUDED_CONTENT@

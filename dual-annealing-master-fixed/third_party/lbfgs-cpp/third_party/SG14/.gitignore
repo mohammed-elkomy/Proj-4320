@@ -1,0 +1,74 @@
+# Windows image file caches
+Thumbs.db
+ehthumbs.db
+
+# Folder config file
+Desktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows Installer files
+*.cab
+*.msi
+*.msm
+*.msp
+
+# Windows shortcuts
+*.lnk
+
+# =========================
+# Operating System Files
+# =========================
+
+# OSX
+# =========================
+
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# Files that might appear on external disk
+.Spotlight-V100
+.Trashes
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+*.tlog
+VS2015/SG14/SG14_test/Release/vc140.pdb
+*.obj
+VS2015/SG14/SG14_test/Release/SG14_test.log
+*.pdb
+VS2015/SG14/SG14_test/Debug/vc120.idb
+*.idb
+*.ipdb
+VS2015/SG14/Release/SG14_test.iobj
+*.ilk
+VS2015/SG14/Release/SG14_test.exe
+*.exe
+VS2015/SG14/.vs/SG14/v14/.suo
+*.opensdf
+VS2015/SG14/SG14.sdf
+*.suo
+VS2015/SG14/SG14.sdf
+VS2015/SG14/SG14_test/Debug/SG14_test.log
+
+# Xcode
+xcuserdata
+
+# CLion
+cmake/.idea
+/.vs
+/.vs/SG14/v15
+/.vs/slnx.sqlite
+/.vs/SG14/v15/Browse.VC.opendb
+/.vs/SG14/v15/Browse.VC.db
+/.vs/ProjectSettings.json
+/build/

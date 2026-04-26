@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/lbfgs_example.dir/example/lbfgs.cpp.o -o lbfgs_example  liblbfgs.a 

@@ -1,0 +1,187 @@
+language: cpp
+sudo: false
+dist: xenial
+os:
+  - linux
+  - osx
+
+env:
+  # Workaround for https://github.com/travis-ci/travis-ci/issues/4681
+  matrix:
+    - TRAVIS_EMPTY_JOB_WORKAROUND=true
+
+matrix:
+  exclude:
+    - env: TRAVIS_EMPTY_JOB_WORKAROUND=true
+
+  include:
+    ############################################################################
+    # Builds with GCC
+    ############################################################################
+    - os: linux
+      env: CC=gcc-7 CXX=g++-7 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Debug"
+      addons:
+        apt:
+          packages:
+            - g++-7
+            - ninja-build
+          sources:
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=gcc-7 CXX=g++-7 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Debug -DLBFGS_USE_BLAS=ON"
+      addons:
+        apt:
+          packages:
+            - g++-7
+            - libopenblas-dev
+            - ninja-build
+          sources:
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=gcc-7 CXX=g++-7 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Release -DLBFGS_DEBUG=OFF"
+      addons:
+        apt:
+          packages:
+            - g++-7
+            - libopenblas-dev
+            - ninja-build
+          sources:
+            - ubuntu-toolchain-r-test
+
+    ############################################################################
+    # Builds with Clang
+    ############################################################################
+    - os: linux
+      env: CC=clang-5.0 CXX=clang++-5.0 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Debug"
+      addons:
+        apt:
+          packages:
+            - g++-7 # For a relatively up-to-date libstdc++
+            - clang-5.0
+            - ninja-build
+          sources:
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=clang-5.0 CXX=clang++-5.0 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Debug -DLBFGS_USE_BLAS=ON"
+      addons:
+        apt:
+          packages:
+            - g++-7 # For a relatively up-to-date libstdc++
+            - clang-5.0
+            - libopenblas-dev
+            - ninja-build
+          sources:
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=clang-5.0 CXX=clang++-5.0 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Release -DLBFGS_DEBUG=OFF"
+      addons:
+        apt:
+          packages:
+            - g++-7 # For a relatively up-to-date libstdc++
+            - clang-5.0
+            - libopenblas-dev
+            - ninja-build
+          sources:
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=clang-6.0 CXX=clang++-6.0 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Debug"
+      addons:
+        apt:
+          packages:
+            - g++-7 # For a relatively up-to-date libstdc++
+            - clang-6.0
+            - ninja-build
+          sources:
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=clang-6.0 CXX=clang++-6.0 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Debug -DLBFGS_USE_BLAS=ON"
+      addons:
+        apt:
+          packages:
+            - g++-7 # For a relatively up-to-date libstdc++
+            - clang-6.0
+            - libopenblas-dev
+            - ninja-build
+          sources:
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=clang-6.0 CXX=clang++-6.0 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Release -DLBFGS_DEBUG=OFF"
+      addons:
+        apt:
+          packages:
+            - g++-7 # For a relatively up-to-date libstdc++
+            - clang-6.0
+            - libopenblas-dev
+            - ninja-build
+          sources:
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=clang-7 CXX=clang++-7 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Debug"
+      addons:
+        apt:
+          packages:
+            - g++-7 # For a relatively up-to-date libstdc++
+            - clang-7
+            - ninja-build
+          sources:
+            - sourceline: 'deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial-7 main'
+              key_url: https://apt.llvm.org/llvm-snapshot.gpg.key
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=clang-7 CXX=clang++-7 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=-stdlib=libc++"
+      addons:
+        apt:
+          packages:
+            - clang-7
+            - libc++-7-dev
+            - libc++abi-7-dev
+            - ninja-build
+          sources:
+            - sourceline: 'deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial-7 main'
+              key_url: https://apt.llvm.org/llvm-snapshot.gpg.key
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=clang-7 CXX=clang++-7 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Debug -DLBFGS_USE_BLAS=ON"
+      addons:
+        apt:
+          packages:
+            - g++-7 # For a relatively up-to-date libstdc++
+            - clang-7
+            - libopenblas-dev
+            - ninja-build
+          sources:
+            - sourceline: 'deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial-7 main'
+              key_url: https://apt.llvm.org/llvm-snapshot.gpg.key
+            - ubuntu-toolchain-r-test
+
+    - os: linux
+      env: CC=clang-7 CXX=clang++-7 OTHER_ARGS="-DCMAKE_BUILD_TYPE=Release -DLBFGS_DEBUG=OFF"
+      addons:
+        apt:
+          packages:
+            - g++-7 # For a relatively up-to-date libstdc++
+            - clang-7
+            - libopenblas-dev
+            - ninja-build
+          sources:
+            - sourceline: 'deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial-7 main'
+              key_url: https://apt.llvm.org/llvm-snapshot.gpg.key
+            - ubuntu-toolchain-r-test
+
+install:
+  - mkdir build && cd build
+  - cmake -G Ninja $OTHER_ARGS ..
+  - cmake --build .
+
+script:
+  - ./test/run_tests

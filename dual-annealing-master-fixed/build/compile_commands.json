@@ -1,0 +1,56 @@
+[
+{
+  "directory": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/build",
+  "command": "/usr/bin/c++ -DLBFGS_USE_GSL_LITE=1 -Ddual_annealing_EXPORTS -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/pcg-cpp/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/gsl-lite/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/include\" -O3 -DNDEBUG -fPIC -pedantic -W -Wall -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs -Wnoexcept -Wold-style-cast -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-null-sentinel -Wstrict-overflow=1 -Wswitch-default -Wundef -Wno-unused -fdiagnostics-color=always -o CMakeFiles/dual_annealing.dir/src/assert.cpp.o -c \"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/src/assert.cpp\"",
+  "file": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/src/assert.cpp",
+  "output": "CMakeFiles/dual_annealing.dir/src/assert.cpp.o"
+},
+{
+  "directory": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/build",
+  "command": "/usr/bin/c++ -DLBFGS_USE_GSL_LITE=1 -Ddual_annealing_EXPORTS -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/pcg-cpp/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/gsl-lite/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/include\" -O3 -DNDEBUG -fPIC -pedantic -W -Wall -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs -Wnoexcept -Wold-style-cast -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-null-sentinel -Wstrict-overflow=1 -Wswitch-default -Wundef -Wno-unused -fdiagnostics-color=always -o CMakeFiles/dual_annealing.dir/src/buffers.cpp.o -c \"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/src/buffers.cpp\"",
+  "file": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/src/buffers.cpp",
+  "output": "CMakeFiles/dual_annealing.dir/src/buffers.cpp.o"
+},
+{
+  "directory": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/build/third_party/lbfgs-cpp",
+  "command": "/usr/bin/c++ -DLBFGS_USE_GSL_LITE=1 -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/gsl-lite/include\" -O3 -DNDEBUG -pedantic -W -Wall -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs -Wnoexcept -Wold-style-cast -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-null-sentinel -Wstrict-overflow=1 -Wswitch-default -Wundef -Wno-unused -Wno-noexcept -march=native -fdiagnostics-color=always -fvisibility=hidden -o CMakeFiles/lbfgs.dir/src/lbfgs.cpp.o -c \"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/src/lbfgs.cpp\"",
+  "file": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/src/lbfgs.cpp",
+  "output": "third_party/lbfgs-cpp/CMakeFiles/lbfgs.dir/src/lbfgs.cpp.o"
+},
+{
+  "directory": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/build/third_party/lbfgs-cpp",
+  "command": "/usr/bin/c++ -DLBFGS_USE_GSL_LITE=1 -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/gsl-lite/include\" -O3 -DNDEBUG -fdiagnostics-color=always -o CMakeFiles/line_search.dir/example/line_search.cpp.o -c \"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/example/line_search.cpp\"",
+  "file": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/example/line_search.cpp",
+  "output": "third_party/lbfgs-cpp/CMakeFiles/line_search.dir/example/line_search.cpp.o"
+},
+{
+  "directory": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/build/third_party/lbfgs-cpp",
+  "command": "/usr/bin/c++ -DLBFGS_USE_GSL_LITE=1 -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/gsl-lite/include\" -O3 -DNDEBUG -fdiagnostics-color=always -o CMakeFiles/lbfgs_example.dir/example/lbfgs.cpp.o -c \"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/example/lbfgs.cpp\"",
+  "file": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/example/lbfgs.cpp",
+  "output": "third_party/lbfgs-cpp/CMakeFiles/lbfgs_example.dir/example/lbfgs.cpp.o"
+},
+{
+  "directory": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/build/examples",
+  "command": "/usr/bin/c++  -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/pcg-cpp/include\" -O3 -DNDEBUG -pedantic -W -Wall -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs -Wnoexcept -Wold-style-cast -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-null-sentinel -Wstrict-overflow=1 -Wswitch-default -Wundef -Wno-unused -fdiagnostics-color=always -o CMakeFiles/ex_1.dir/ex_1.cpp.o -c \"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/examples/ex_1.cpp\"",
+  "file": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/examples/ex_1.cpp",
+  "output": "examples/CMakeFiles/ex_1.dir/ex_1.cpp.o"
+},
+{
+  "directory": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/build/examples",
+  "command": "/usr/bin/c++ -DLBFGS_USE_GSL_LITE=1 -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/pcg-cpp/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/gsl-lite/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/include\" -O3 -DNDEBUG -pedantic -W -Wall -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs -Wnoexcept -Wold-style-cast -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-null-sentinel -Wstrict-overflow=1 -Wswitch-default -Wundef -Wno-unused -fdiagnostics-color=always -o CMakeFiles/ex_2.dir/tsallis.cpp.o -c \"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/examples/tsallis.cpp\"",
+  "file": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/examples/tsallis.cpp",
+  "output": "examples/CMakeFiles/ex_2.dir/tsallis.cpp.o"
+},
+{
+  "directory": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/build/examples",
+  "command": "/usr/bin/c++ -DLBFGS_USE_GSL_LITE=1 -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/pcg-cpp/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/gsl-lite/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/include\" -O3 -DNDEBUG -pedantic -W -Wall -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs -Wnoexcept -Wold-style-cast -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-null-sentinel -Wstrict-overflow=1 -Wswitch-default -Wundef -Wno-unused -fdiagnostics-color=always -o CMakeFiles/ex_3.dir/ex_3.cpp.o -c \"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/examples/ex_3.cpp\"",
+  "file": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/examples/ex_3.cpp",
+  "output": "examples/CMakeFiles/ex_3.dir/ex_3.cpp.o"
+},
+{
+  "directory": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/build/examples",
+  "command": "/usr/bin/c++ -DLBFGS_USE_GSL_LITE=1 -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/pcg-cpp/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/gsl-lite/include\" -I\"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/third_party/lbfgs-cpp/include\" -O3 -DNDEBUG -pedantic -W -Wall -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs -Wnoexcept -Wold-style-cast -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-null-sentinel -Wstrict-overflow=1 -Wswitch-default -Wundef -Wno-unused -fdiagnostics-color=always -o CMakeFiles/ex_4.dir/rastrigin.cpp.o -c \"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/examples/rastrigin.cpp\"",
+  "file": "/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/examples/rastrigin.cpp",
+  "output": "examples/CMakeFiles/ex_4.dir/rastrigin.cpp.o"
+}
+]
