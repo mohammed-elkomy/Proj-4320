@@ -154,8 +154,10 @@ int    rng_int(int n);      /* [0, n) */
  *  CUDA renderer lifecycle  (implemented in render.cu)
  *  Call init once after the target image is loaded, free once before exit.
  * ══════════════════════════════════════════════════════════════════════════ */
-void cuda_renderer_init(int w, int h);
+void cuda_renderer_init(const Image *target);
 void cuda_renderer_free(void);
+void batch_compute_loss_gpu(const double *pop, int count,
+                            double *losses_out, int w, int h);
 
 #ifdef __cplusplus
 }  /* extern "C" */

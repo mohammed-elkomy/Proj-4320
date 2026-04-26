@@ -183,9 +183,10 @@ void ga_init(GA *ga, Image *target, Profiler *prof)
             ga->population[i][cidx+2] = rng_uniform();
             ga->population[i][cidx+3] = ALPHA_INIT;
         }
-        ga->fitnesses[i] = compute_loss(ga->population[i], target,
-                                        ga->scratch, prof);
     }
+
+    batch_compute_loss_gpu((const double *)ga->population, POP_SIZE,
+                           ga->fitnesses, target->w, target->h);
 
     for (int i = 0; i < POP_SIZE; i++)
         if (ga->fitnesses[i] < ga->best_loss)
@@ -252,12 +253,12 @@ GAStats ga_step(GA *ga)
     }
 
     /* 3. Re-evaluate fitness for replaced chromosomes only */
-    for (int i = 0; i < POP_SIZE; i++) {
-        if (i > elite_boundary) {
-            ga->fitnesses[i] = compute_loss(ga->population[i], ga->target,
-                                            ga->scratch, ga->prof);
-        }
-    }
+    int n_replaced = POP_SIZE - elite_boundary - 1;
+    if (n_replaced > 0)
+        batch_compute_loss_gpu((const double *)ga->population + (elite_boundary + 1) * N_GENES,
+                               n_replaced,
+                               ga->fitnesses + elite_boundary + 1,
+                               ga->target->w, ga->target->h);
 
     ga->generation++;
 

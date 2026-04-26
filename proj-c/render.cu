@@ -1,26 +1,22 @@
-/*  render.cu  —  CUDA triangle rasteriser
+/*  render.cu  —  CUDA triangle rasteriser + GPU batch MSE evaluator
  *
- *  Drop-in GPU replacement for render.c.
- *  Exports the same render_triangles() signature so ga.c stays unchanged,
- *  plus two lifecycle calls the caller must bookend around the GA run:
+ *  Two rendering paths:
  *
- *      cuda_renderer_init(w, h);   // once, after loading the target image
- *      ...run GA...
- *      cuda_renderer_free();       // once, before exit
+ *  1. render_triangles()        — single chromosome, downloads canvas to CPU
+ *                                 Used only for PPM snapshot saves.
  *
- *  Kernel design
- *  ─────────────
- *  One CUDA thread per pixel.  Each thread iterates over all N_TRIANGLES in
- *  draw order, performs the same barycentric test + alpha blend as render.c,
- *  and writes its final RGB value directly to the output buffer.
+ *  2. batch_compute_loss_gpu()  — N chromosomes, computes MSE entirely on GPU.
+ *                                 Returns only N scalar loss values (~N*4 bytes).
+ *                                 Used for every GA fitness evaluation.
  *
- *  Triangle data (vertices + colors) is small:
- *      N_TRIANGLES * (6 verts + 4 colors) * 4 bytes = 200 * 10 * 4 = 8 KB
- *  This fits comfortably in shared memory, so every block loads it once and
- *  all threads read from fast on-chip storage for the inner loop.
- *
- *  Device buffers are allocated once in cuda_renderer_init() and reused on
- *  every render call to avoid per-call cudaMalloc overhead.
+ *  Device buffers (persistent, allocated once in cuda_renderer_init):
+ *    d_verts       [N_VERTEX_GENES]               — single-render verts
+ *    d_colors      [N_COLOR_GENES]                — single-render colors
+ *    d_canvas      [H*W*3]                        — single-render output
+ *    d_target      [H*W*3]                        — target image (uploaded once)
+ *    d_all_verts   [POP_SIZE * N_VERTEX_GENES]    — batch verts
+ *    d_all_colors  [POP_SIZE * N_COLOR_GENES]     — batch colors
+ *    d_losses      [POP_SIZE]                     — batch MSE output
  */
 
 #include "triangle_ga.h"
@@ -28,47 +24,50 @@
 #include <stdio.h>
 #include <math.h>
 
-/* ── Error-checking wrapper ──────────────────────────────────────────────── */
-#define CUDA_CHECK(call)                                                        \
-    do {                                                                        \
-        cudaError_t _err = (call);                                              \
-        if (_err != cudaSuccess) {                                              \
-            fprintf(stderr, "CUDA error at %s:%d — %s\n",                      \
-                    __FILE__, __LINE__, cudaGetErrorString(_err));               \
-            exit(1);                                                            \
-        }                                                                       \
+#define CUDA_CHECK(call)                                                       \
+    do {                                                                       \
+        cudaError_t _err = (call);                                             \
+        if (_err != cudaSuccess) {                                             \
+            fprintf(stderr, "CUDA error at %s:%d — %s\n",                     \
+                    __FILE__, __LINE__, cudaGetErrorString(_err));              \
+            exit(1);                                                           \
+        }                                                                      \
     } while (0)
 
-/* ── Persistent device buffers (allocated once, reused every render call) ── */
-static float *d_verts  = NULL;   /* [N_VERTEX_GENES]   */
-static float *d_colors = NULL;   /* [N_COLOR_GENES]    */
-static float *d_canvas = NULL;   /* [H * W * 3] floats */
+/* ── Persistent device buffers ─────────────────────────────────────────── */
+static float *d_verts      = NULL;
+static float *d_colors     = NULL;
+static float *d_canvas     = NULL;
+static float *d_target     = NULL;
+static float *d_all_verts  = NULL;
+static float *d_all_colors = NULL;
+static float *d_losses     = NULL;
+
+/* ── Pinned host staging buffers (cudaMallocHost — DMA-able, no copy overhead) */
+static float *h_all_verts  = NULL;
+static float *h_all_colors = NULL;
+static float *h_losses     = NULL;
 
 
-/* ════════════════════════════════════════════════════════════════════════════
- *  Kernel
- * ════════════════════════════════════════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════════════════
+ *  Kernel 1 — single render  (PPM snapshots only)
  *
- *  Grid : ceil(W/16) × ceil(H/16) blocks of 16×16 threads.
- *  Each thread = one output pixel (px, py).
- *
- *  Shared memory layout: [ sv: N_VERTEX_GENES floats | sc: N_COLOR_GENES floats ]
- *  All threads in the block cooperate to load this data before the inner loop.
- */
+ *  Grid : (ceil(W/16), ceil(H/16))   Block: (16, 16)
+ *  One thread per pixel; triangle data loaded into shared memory.
+ * ════════════════════════════════════════════════════════════════════════ */
 __global__ void render_kernel(
-    const float * __restrict__ verts,    /* [N_TRIANGLES * 6]  normalised [0,1] */
-    const float * __restrict__ colors,   /* [N_TRIANGLES * 4]  RGBA             */
-    float       * __restrict__ canvas,   /* [H * W * 3]        output           */
+    const float * __restrict__ verts,
+    const float * __restrict__ colors,
+    float       * __restrict__ canvas,
     int w, int h)
 {
     extern __shared__ float sdata[];
-    float *sv = sdata;                   /* vertex data  */
-    float *sc = sdata + N_VERTEX_GENES;  /* color data   */
+    float *sv = sdata;
+    float *sc = sdata + N_VERTEX_GENES;
 
     int tid        = threadIdx.y * blockDim.x + threadIdx.x;
     int block_size = blockDim.x  * blockDim.y;
 
-    /* Cooperatively load all triangle data into shared memory */
     for (int i = tid; i < N_VERTEX_GENES; i += block_size) sv[i] = verts[i];
     for (int i = tid; i < N_COLOR_GENES;  i += block_size) sc[i] = colors[i];
     __syncthreads();
@@ -77,122 +76,253 @@ __global__ void render_kernel(
     int py = blockIdx.y * blockDim.y + threadIdx.y;
     if (px >= w || py >= h) return;
 
-    float cr = 1.0f, cg = 1.0f, cb = 1.0f;   /* white background */
+    float cr = 1.f, cg = 1.f, cb = 1.f;
 
     for (int t = 0; t < N_TRIANGLES; t++) {
-        /* Scale normalised [0,1] vertex coords to pixel space */
-        float x0 = sv[t*6 + 0] * w,  y0 = sv[t*6 + 1] * h;
-        float x1 = sv[t*6 + 2] * w,  y1 = sv[t*6 + 3] * h;
-        float x2 = sv[t*6 + 4] * w,  y2 = sv[t*6 + 5] * h;
+        float x0=sv[t*6+0]*w, y0=sv[t*6+1]*h;
+        float x1=sv[t*6+2]*w, y1=sv[t*6+3]*h;
+        float x2=sv[t*6+4]*w, y2=sv[t*6+5]*h;
+        float tr=sc[t*4+0], tg=sc[t*4+1], tb=sc[t*4+2], ta=sc[t*4+3];
 
-        float tr = sc[t*4 + 0];
-        float tg = sc[t*4 + 1];
-        float tb = sc[t*4 + 2];
-        float ta = sc[t*4 + 3];
-
-        /* Edge vectors — same convention as render.c / Python:
-         *   v0 = tri[2] - tri[0],   v1 = tri[1] - tri[0]          */
-        float v0x = x2 - x0,  v0y = y2 - y0;
-        float v1x = x1 - x0,  v1y = y1 - y0;
-
-        float d00 = v0x*v0x + v0y*v0y;
-        float d01 = v0x*v1x + v0y*v1y;
-        float d11 = v1x*v1x + v1y*v1y;
-
-        float denom = d00*d11 - d01*d01;
-        if (fabsf(denom) < 1e-10f) continue;   /* degenerate triangle */
-        float inv = 1.0f / denom;
-
-        float v2x = (float)px - x0;
-        float v2y = (float)py - y0;
-
-        float d02 = v0x*v2x + v0y*v2y;
-        float d12 = v1x*v2x + v1y*v2y;
-
-        float u = (d11*d02 - d01*d12) * inv;
-        float v = (d00*d12 - d01*d02) * inv;
-
-        if (u >= 0.0f && v >= 0.0f && u + v <= 1.0f) {
-            float one_minus_a = 1.0f - ta;
-            cr = tr*ta + cr*one_minus_a;
-            cg = tg*ta + cg*one_minus_a;
-            cb = tb*ta + cb*one_minus_a;
+        float v0x=x2-x0, v0y=y2-y0, v1x=x1-x0, v1y=y1-y0;
+        float d00=v0x*v0x+v0y*v0y, d01=v0x*v1x+v0y*v1y, d11=v1x*v1x+v1y*v1y;
+        float denom=d00*d11-d01*d01;
+        if (fabsf(denom)<1e-10f) continue;
+        float inv=1.f/denom, v2x=(float)px-x0, v2y=(float)py-y0;
+        float d02=v0x*v2x+v0y*v2y, d12=v1x*v2x+v1y*v2y;
+        float u=(d11*d02-d01*d12)*inv, v=(d00*d12-d01*d02)*inv;
+        if (u>=0&&v>=0&&u+v<=1) {
+            float a1=1.f-ta;
+            cr=tr*ta+cr*a1; cg=tg*ta+cg*a1; cb=tb*ta+cb*a1;
         }
     }
 
-    int idx = (py * w + px) * 3;
-    canvas[idx + 0] = cr;
-    canvas[idx + 1] = cg;
-    canvas[idx + 2] = cb;
+    int idx=(py*w+px)*3;
+    canvas[idx]=cr; canvas[idx+1]=cg; canvas[idx+2]=cb;
 }
 
 
-/* ════════════════════════════════════════════════════════════════════════════
- *  Public API  (extern "C" so C callers in ga.c / main.c link correctly)
- * ════════════════════════════════════════════════════════════════════════════ */
-
-extern "C" void cuda_renderer_init(int w, int h)
+/* ════════════════════════════════════════════════════════════════════════
+ *  Kernel 2 — batch render + inline MSE  (GA fitness evaluations)
+ *
+ *  Grid : (ceil(W/16), ceil(H/16), count)   Block: (16, 16, 1)
+ *  blockIdx.z = chromosome index.
+ *
+ *  Each thread renders its pixel for chromosome blockIdx.z, computes
+ *  squared error vs target, then the block tree-reduces 256 values to 1
+ *  and atomicAdds into losses[blockIdx.z].
+ *
+ *  No canvas download — only losses[] (count floats) is transferred back.
+ *
+ *  Shared memory layout (per block, ~8.8 KB):
+ *    sv       [N_VERTEX_GENES]   — triangle vertices
+ *    sc       [N_COLOR_GENES]    — triangle colors
+ *    s_reduce [256]              — block reduction scratch
+ * ════════════════════════════════════════════════════════════════════════ */
+__global__ void batch_render_mse_kernel(
+    const float * __restrict__ all_verts,    /* [count * N_VERTEX_GENES] */
+    const float * __restrict__ all_colors,   /* [count * N_COLOR_GENES]  */
+    const float * __restrict__ target,       /* [H * W * 3]              */
+    float       *              losses,       /* [count] — pre-zeroed     */
+    int w, int h)
 {
+    int chrom = blockIdx.z;
+
+    const float *verts  = all_verts  + chrom * N_VERTEX_GENES;
+    const float *colors = all_colors + chrom * N_COLOR_GENES;
+
+    extern __shared__ float sdata[];
+    float *sv       = sdata;
+    float *sc       = sdata + N_VERTEX_GENES;
+    float *s_reduce = sdata + N_VERTEX_GENES + N_COLOR_GENES;
+
+    int tid        = threadIdx.y * blockDim.x + threadIdx.x;  /* 0..255 */
+    int block_size = blockDim.x  * blockDim.y;                /* 256    */
+
+    /* Cooperatively load triangle data into shared memory */
+    for (int i = tid; i < N_VERTEX_GENES; i += block_size) sv[i] = verts[i];
+    for (int i = tid; i < N_COLOR_GENES;  i += block_size) sc[i] = colors[i];
+    __syncthreads();
+
+    int px = blockIdx.x * blockDim.x + threadIdx.x;
+    int py = blockIdx.y * blockDim.y + threadIdx.y;
+
+    float sq_err = 0.f;
+
+    if (px < w && py < h) {
+        float cr = 1.f, cg = 1.f, cb = 1.f;
+
+        for (int t = 0; t < N_TRIANGLES; t++) {
+            float x0=sv[t*6+0]*w, y0=sv[t*6+1]*h;
+            float x1=sv[t*6+2]*w, y1=sv[t*6+3]*h;
+            float x2=sv[t*6+4]*w, y2=sv[t*6+5]*h;
+            float tr=sc[t*4+0], tg=sc[t*4+1], tb=sc[t*4+2], ta=sc[t*4+3];
+
+            float v0x=x2-x0, v0y=y2-y0, v1x=x1-x0, v1y=y1-y0;
+            float d00=v0x*v0x+v0y*v0y, d01=v0x*v1x+v0y*v1y, d11=v1x*v1x+v1y*v1y;
+            float denom=d00*d11-d01*d01;
+            if (fabsf(denom)<1e-10f) continue;
+            float inv=1.f/denom, v2x=(float)px-x0, v2y=(float)py-y0;
+            float d02=v0x*v2x+v0y*v2y, d12=v1x*v2x+v1y*v2y;
+            float u=(d11*d02-d01*d12)*inv, v=(d00*d12-d01*d02)*inv;
+            if (u>=0&&v>=0&&u+v<=1) {
+                float a1=1.f-ta;
+                cr=tr*ta+cr*a1; cg=tg*ta+cg*a1; cb=tb*ta+cb*a1;
+            }
+        }
+
+        /* Squared error vs target for this pixel (R + G + B) */
+        int idx=(py*w+px)*3;
+        float dr=cr-target[idx], dg=cg-target[idx+1], db=cb-target[idx+2];
+        sq_err = dr*dr + dg*dg + db*db;
+    }
+
+    /* Tree reduction: 256 → 1 within the block */
+    s_reduce[tid] = sq_err;
+    __syncthreads();
+    for (int s = block_size >> 1; s > 0; s >>= 1) {
+        if (tid < s) s_reduce[tid] += s_reduce[tid + s];
+        __syncthreads();
+    }
+
+    /* One atomic add per block — far fewer atomics than one per thread */
+    if (tid == 0)
+        atomicAdd(&losses[chrom], s_reduce[0]);
+}
+
+
+/* ════════════════════════════════════════════════════════════════════════
+ *  Public API
+ * ════════════════════════════════════════════════════════════════════════ */
+
+extern "C" void cuda_renderer_init(const Image *target)
+{
+    int w = target->w, h = target->h;
+
+    /* Single-render buffers */
     CUDA_CHECK(cudaMalloc(&d_verts,  N_VERTEX_GENES * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_colors, N_COLOR_GENES  * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_canvas, w * h * 3      * sizeof(float)));
 
-    int dev;
-    cudaDeviceProp prop;
+    /* Target image — uploaded once, stays on GPU for the whole run */
+    CUDA_CHECK(cudaMalloc(&d_target, w * h * 3 * sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(d_target, target->data,
+                          w * h * 3 * sizeof(float), cudaMemcpyHostToDevice));
+
+    /* Batch device buffers — sized for the full population */
+    CUDA_CHECK(cudaMalloc(&d_all_verts,  POP_SIZE * N_VERTEX_GENES * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_all_colors, POP_SIZE * N_COLOR_GENES  * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_losses,     POP_SIZE                  * sizeof(float)));
+
+    /* Pinned host staging buffers — locked in RAM so DMA can bypass the CPU cache */
+    CUDA_CHECK(cudaMallocHost(&h_all_verts,  POP_SIZE * N_VERTEX_GENES * sizeof(float)));
+    CUDA_CHECK(cudaMallocHost(&h_all_colors, POP_SIZE * N_COLOR_GENES  * sizeof(float)));
+    CUDA_CHECK(cudaMallocHost(&h_losses,     POP_SIZE                  * sizeof(float)));
+
+    int dev; cudaDeviceProp prop;
     CUDA_CHECK(cudaGetDevice(&dev));
     CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
     printf("[CUDA] Device  : %s  (compute %d.%d, %d SMs)\n",
            prop.name, prop.major, prop.minor, prop.multiProcessorCount);
-    printf("[CUDA] Buffers : %.1f KB verts  %.1f KB colors  %.1f KB canvas\n",
-           N_VERTEX_GENES * sizeof(float) / 1024.0f,
-           N_COLOR_GENES  * sizeof(float) / 1024.0f,
-           w * h * 3      * sizeof(float) / 1024.0f);
+    printf("[CUDA] Buffers : %.1f KB target  %.1f KB batch verts  %.1f KB batch colors\n",
+           w*h*3 *sizeof(float)/1024.f,
+           (float)(POP_SIZE*N_VERTEX_GENES*sizeof(float))/1024.f,
+           (float)(POP_SIZE*N_COLOR_GENES *sizeof(float))/1024.f);
 }
 
 extern "C" void cuda_renderer_free(void)
 {
-    cudaFree(d_verts);   d_verts  = NULL;
-    cudaFree(d_colors);  d_colors = NULL;
-    cudaFree(d_canvas);  d_canvas = NULL;
+    cudaFree(d_verts);      d_verts      = NULL;
+    cudaFree(d_colors);     d_colors     = NULL;
+    cudaFree(d_canvas);     d_canvas     = NULL;
+    cudaFree(d_target);     d_target     = NULL;
+    cudaFree(d_all_verts);  d_all_verts  = NULL;
+    cudaFree(d_all_colors); d_all_colors = NULL;
+    cudaFree(d_losses);     d_losses     = NULL;
+
+    cudaFreeHost(h_all_verts);  h_all_verts  = NULL;
+    cudaFreeHost(h_all_colors); h_all_colors = NULL;
+    cudaFreeHost(h_losses);     h_losses     = NULL;
 }
 
-/*  render_triangles — same signature as render.c, now GPU-accelerated.
- *
- *  Hot path (called ~DISC_COUNT times per GA generation):
- *    1. Upload verts + colors to GPU   (~8 KB each direction, fast)
- *    2. Launch kernel — all pixels in parallel
- *    3. Download rendered canvas back  (W*H*3*4 bytes — main transfer cost)
- *
- *  The MSE loop in ga.c still runs on CPU.  Moving it to the GPU with a
- *  reduction kernel would eliminate step 3 entirely and is the natural
- *  next optimisation if the transfer becomes the bottleneck.
- */
+/* render_triangles — single render + canvas download, used for snapshots only */
 extern "C" void render_triangles(const float *vertices_flat, const float *colors,
                                  Image *dst, Profiler *prof)
 {
     double t0 = profiler_now();
+    int w = dst->w, h = dst->h;
 
-    const int w = dst->w;
-    const int h = dst->h;
-
-    /* Upload triangle data (~8 KB total — negligible) */
     CUDA_CHECK(cudaMemcpy(d_verts,  vertices_flat,
                           N_VERTEX_GENES * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_colors, colors,
                           N_COLOR_GENES  * sizeof(float), cudaMemcpyHostToDevice));
 
-    /* Launch: 16×16 thread blocks, shared memory holds all triangle data */
     dim3 block(16, 16);
-    dim3 grid((w + 15) / 16, (h + 15) / 16);
+    dim3 grid((w+15)/16, (h+15)/16);
     size_t smem = (N_VERTEX_GENES + N_COLOR_GENES) * sizeof(float);
 
     render_kernel<<<grid, block, smem>>>(d_verts, d_colors, d_canvas, w, h);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    /* Download rendered canvas back to CPU */
     CUDA_CHECK(cudaMemcpy(dst->data, d_canvas,
-                          w * h * 3 * sizeof(float), cudaMemcpyDeviceToHost));
+                          w*h*3*sizeof(float), cudaMemcpyDeviceToHost));
 
     profiler_add(prof, BUCKET_RENDER, profiler_now() - t0);
+}
+
+/*
+ * batch_compute_loss_gpu
+ *
+ * Renders `count` chromosomes and computes MSE vs the target image entirely
+ * on the GPU. Only `count` floats are transferred back to the CPU.
+ *
+ * pop        : flat array — chromosome c starts at pop[c * N_GENES] (double)
+ * count      : number of chromosomes to evaluate (≤ POP_SIZE)
+ * losses_out : receives count MSE values as doubles
+ * w, h       : image dimensions
+ *
+ * Transfer cost per call:
+ *   Upload : count * (N_VERTEX_GENES + N_COLOR_GENES) * 4 bytes
+ *   Download: count * 4 bytes   (vs count * W*H*3*4 bytes previously)
+ */
+extern "C" void batch_compute_loss_gpu(const double *pop, int count,
+                                        double *losses_out, int w, int h)
+{
+    /* Convert double chromosomes to float staging buffers */
+    for (int c = 0; c < count; c++) {
+        const double *x     = pop    + (size_t)c * N_GENES;
+        float        *verts  = h_all_verts  + c * N_VERTEX_GENES;
+        float        *colors = h_all_colors + c * N_COLOR_GENES;
+        for (int i = 0; i < N_VERTEX_GENES; i++) verts[i]  = (float)x[i];
+        for (int i = 0; i < N_COLOR_GENES;  i++) colors[i] = (float)x[N_VERTEX_GENES + i];
+    }
+
+    /* Upload all verts and colors in two transfers */
+    CUDA_CHECK(cudaMemcpy(d_all_verts,  h_all_verts,
+                          count * N_VERTEX_GENES * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_all_colors, h_all_colors,
+                          count * N_COLOR_GENES  * sizeof(float), cudaMemcpyHostToDevice));
+
+    /* Zero the loss accumulators */
+    CUDA_CHECK(cudaMemset(d_losses, 0, count * sizeof(float)));
+
+    /* One kernel launch covers all chromosomes (3D grid, z = chromosome index) */
+    dim3 block(16, 16, 1);
+    dim3 grid((w+15)/16, (h+15)/16, count);
+    size_t smem = (N_VERTEX_GENES + N_COLOR_GENES + 256) * sizeof(float);
+
+    batch_render_mse_kernel<<<grid, block, smem>>>(
+        d_all_verts, d_all_colors, d_target, d_losses, w, h);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    /* Download only the loss scalars (~count * 4 bytes) */
+    CUDA_CHECK(cudaMemcpy(h_losses, d_losses,
+                          count * sizeof(float), cudaMemcpyDeviceToHost));
+
+    /* Normalise to MSE: divide by total number of float elements */
+    double n = (double)w * h * 3;
+    for (int c = 0; c < count; c++)
+        losses_out[c] = (double)h_losses[c] / n;
 }
