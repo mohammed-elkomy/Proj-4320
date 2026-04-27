@@ -1,6 +1,0 @@
-﻿{
-    "name": "my-program",
-    "dependencies": [
-        "gsl-lite"
-    ]
-}

@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/ex_3.dir/ex_3.cpp.o -o ex_3  -Wl,-rpath,"/home/mohammed_elkoumy/Downloads/New Folder/dual-annealing-master/build" ../libdual_annealing.so ../third_party/lbfgs-cpp/liblbfgs.a 

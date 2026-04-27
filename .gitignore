@@ -4,3 +4,7 @@
 **/**.o
 proj-c/triangle_ga
 .idea
+/private/
+/cmake-build-debug/
+CMakeLists.txt
+/output/
