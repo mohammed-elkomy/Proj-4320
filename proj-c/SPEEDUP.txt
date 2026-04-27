@@ -1,0 +1,60 @@
+GPU Speedup Analysis — Triangle GA (cuda-kernel branch)
+=========================================================
+Hardware : NVIDIA GeForce RTX 4070 Laptop GPU (36 SMs, sm_89)
+Image    : 200 x 200 px, 200 triangles, 30 chromosomes (POP_SIZE)
+
+
+1. SINGLE RENDER  (one chromosome, CPU rasteriser vs GPU kernel)
+-----------------------------------------------------------------
+  CPU software rasteriser : ~6.54 ms/call
+  GPU render_kernel       : ~0.29 ms/call
+  Speedup                 : ~23x
+
+  How: one CUDA thread per pixel, triangle data in shared memory so
+  every thread in a block reads from L1 instead of global memory.
+
+
+2. FITNESS EVALUATION PER GENERATION  (30 chromosomes)
+-------------------------------------------------------
+  Old path (sequential GPU):
+    For each of 30 chromosomes:
+      - Upload verts + colors  (~235 KB)
+      - Launch render kernel, sync
+      - Download canvas        (~469 KB)   ← bottleneck
+      - CPU MSE loop
+    Total per generation : ~8.0 ms   (~14 MB of PCIe downloads)
+
+  New path (batch GPU):
+    - Upload all 30 verts + colors at once  (~235 KB total)
+    - Launch one 3D kernel (blockIdx.z = chromosome index)
+      Each thread renders its pixel AND accumulates squared error.
+      Block tree-reduction + atomicAdd → one scalar per block.
+    - Download 30 loss scalars             (~120 bytes)
+    Total per generation : ~2.0 ms
+
+  Speedup (sequential GPU → batch GPU) : ~4x
+  Speedup (CPU baseline → batch GPU)   : ~98x  (196 ms → 2 ms)
+
+
+3. PINNED MEMORY  (cudaMallocHost for host staging buffers)
+-----------------------------------------------------------
+  Host staging buffers (h_all_verts, h_all_colors, h_losses) are now
+  allocated with cudaMallocHost instead of regular malloc/static arrays.
+
+  Effect: the OS locks these pages in RAM so the GPU's DMA engine can
+  transfer directly without an extra kernel-mode copy through a bounce
+  buffer. On PCIe 4.0 this typically doubles effective bandwidth for
+  the upload transfers.
+
+  Expected additional gain: ~1.5–2x on the batch upload step.
+  Combined batch speedup (vs sequential GPU): ~6–8x expected.
+
+
+SUMMARY
+-------
+  Baseline (CPU, 30 chromosomes/gen) : ~196 ms/gen
+  GPU render_kernel (sequential)     :   ~8 ms/gen   →  ~25x over CPU
+  + Batch 3D kernel + MSE on GPU     :   ~2 ms/gen   →  ~98x over CPU
+
+  Net result: the GA runs ~100x more generations per second compared
+  to what a pure CPU implementation would achieve on this hardware.

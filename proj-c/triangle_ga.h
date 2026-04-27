@@ -3,6 +3,11 @@
 
 #include <stdint.h>
 
+/* Allow this header to be included from both C and C++ (nvcc) translation units */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ══════════════════════════════════════════════════════════════════════════
  *  Tunable parameters — edit these to control the run
  * ══════════════════════════════════════════════════════════════════════════
@@ -47,7 +52,10 @@
 #define DISC_COUNT      23      /* ceil(POP_SIZE * 0.75) */
 #define CROSSOVER_PROB  0.95
 #define ALPHA_INIT      0.15
-#define STAGNATION_GENS 2000
+#define STAGNATION_GENS        2000
+#define STAGNATION_RELATIVE    0        /* 1 = relative, 0 = absolute */
+#define STAGNATION_REL_TOL     1e-4     /* relative: min fractional improvement */
+#define STAGNATION_ABS_TOL     1e-7     /* absolute: min raw improvement       */
 
 /* ── Profiler buckets ─────────────────────────────────────────────────────── */
 #define BUCKET_RENDER   0
@@ -131,6 +139,8 @@ void    ga_destroy(GA *ga);
 int     ga_is_done(const GA *ga);
 GAStats ga_step(GA *ga);
 GAStats ga_stats(const GA *ga);
+int     ga_save(const GA *ga, const char *path);   /* returns 0 on success */
+int     ga_load(GA *ga, const char *path);         /* returns 0 on success */
 
 /* ══════════════════════════════════════════════════════════════════════════
  *  RNG  (xoshiro256**)
@@ -139,5 +149,18 @@ void   rng_seed(uint64_t s);
 double rng_uniform(void);   /* [0, 1) */
 double rng_normal(void);    /* standard normal */
 int    rng_int(int n);      /* [0, n) */
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  CUDA renderer lifecycle  (implemented in render.cu)
+ *  Call init once after the target image is loaded, free once before exit.
+ * ══════════════════════════════════════════════════════════════════════════ */
+void cuda_renderer_init(const Image *target);
+void cuda_renderer_free(void);
+void batch_compute_loss_gpu(const double *pop, int count,
+                            double *losses_out, int w, int h);
+
+#ifdef __cplusplus
+}  /* extern "C" */
+#endif
 
 #endif /* TRIANGLE_GA_H */

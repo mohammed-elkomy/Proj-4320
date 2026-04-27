@@ -1,0 +1,6 @@
+Target image : 200 x 200 (loaded from target.ppm)
+State vector : length 2000  (200 triangles x (3 vertices x 2 coords + 4 RGBA))
+Solver       : GA
+
+Resumed from ga_checkpoint.bin at generation 140000  (best=0.011198)
+

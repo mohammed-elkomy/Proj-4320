@@ -183,9 +183,10 @@ void ga_init(GA *ga, Image *target, Profiler *prof)
             ga->population[i][cidx+2] = rng_uniform();
             ga->population[i][cidx+3] = ALPHA_INIT;
         }
-        ga->fitnesses[i] = compute_loss(ga->population[i], target,
-                                        ga->scratch, prof);
     }
+
+    batch_compute_loss_gpu((const double *)ga->population, POP_SIZE,
+                           ga->fitnesses, target->w, target->h);
 
     for (int i = 0; i < POP_SIZE; i++)
         if (ga->fitnesses[i] < ga->best_loss)
@@ -252,12 +253,12 @@ GAStats ga_step(GA *ga)
     }
 
     /* 3. Re-evaluate fitness for replaced chromosomes only */
-    for (int i = 0; i < POP_SIZE; i++) {
-        if (i > elite_boundary) {
-            ga->fitnesses[i] = compute_loss(ga->population[i], ga->target,
-                                            ga->scratch, ga->prof);
-        }
-    }
+    int n_replaced = POP_SIZE - elite_boundary - 1;
+    if (n_replaced > 0)
+        batch_compute_loss_gpu((const double *)ga->population + (elite_boundary + 1) * N_GENES,
+                               n_replaced,
+                               ga->fitnesses + elite_boundary + 1,
+                               ga->target->w, ga->target->h);
 
     ga->generation++;
 
@@ -267,7 +268,11 @@ GAStats ga_step(GA *ga)
         if (ga->fitnesses[i] < current_best)
             current_best = ga->fitnesses[i];
 
-    if (current_best < ga->best_loss - 1e-7) {
+    int improved = STAGNATION_RELATIVE
+                   ? (current_best < ga->best_loss * (1.0 - STAGNATION_REL_TOL))
+                   : (current_best < ga->best_loss - STAGNATION_ABS_TOL);
+
+    if (improved) {
         ga->best_loss        = current_best;
         ga->stagnation_count = 0;
     } else {
@@ -280,9 +285,48 @@ GAStats ga_step(GA *ga)
                ga->generation);
     }
 
+
     profiler_add(ga->prof, BUCKET_OPTIMIZE, profiler_now() - t0);
 
     return ga_stats(ga);
+}
+
+int ga_save(const GA *ga, const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) { perror(path); return -1; }
+
+    fwrite(&ga->generation,       sizeof(int),    1,        f);
+    fwrite(&ga->best_loss,        sizeof(double), 1,        f);
+    fwrite(&ga->stagnation_count, sizeof(int),    1,        f);
+    fwrite(ga->population,        sizeof(double), POP_SIZE * N_GENES, f);
+    fwrite(ga->fitnesses,         sizeof(double), POP_SIZE, f);
+
+    fclose(f);
+    return 0;
+}
+
+int ga_load(GA *ga, const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;   /* file doesn't exist — not an error, just start fresh */
+
+    int ok = 1;
+    ok &= (fread(&ga->generation,       sizeof(int),    1,                  f) == 1);
+    ok &= (fread(&ga->best_loss,        sizeof(double), 1,                  f) == 1);
+    ok &= (fread(&ga->stagnation_count, sizeof(int),    1,                  f) == 1);
+    ok &= (fread(ga->population,        sizeof(double), POP_SIZE * N_GENES, f) == POP_SIZE * N_GENES);
+    ok &= (fread(ga->fitnesses,         sizeof(double), POP_SIZE,           f) == POP_SIZE);
+
+    fclose(f);
+
+    if (!ok) {
+        fprintf(stderr, "ga_load: checkpoint file '%s' is corrupted — starting fresh.\n", path);
+        return -1;
+    }
+
+    ga->done = 0;
+    return 0;
 }
 
 GAStats ga_stats(const GA *ga)
