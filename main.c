@@ -139,18 +139,50 @@ static void benchmark_rendering(const Image *target, Profiler *prof,
     float *fv = malloc(n_vertex_genes * sizeof(float));
     float *fc = malloc(n_color_genes  * sizeof(float));
 
+    int loss_type = cfg->loss_type;
+    int npix_rgb = target->w * target->h * 3;
+    int npix     = target->w * target->h;
+
     double seq_start = profiler_now();
     for (int r = 0; r < N_BENCH; r++) {
         for (int c = 0; c < pop_size; c++) {
             vec_to_parts(fake_pop + (size_t)c * n_genes, fv, fc, cfg);
             render_triangles(fv, fc, scratch, prof);
-            int npix = target->w * target->h * 3;
-            double mse = 0.0;
-            for (int k = 0; k < npix; k++) {
-                double d = (double)scratch->data[k] - (double)target->data[k];
-                mse += d * d;
+
+            if (loss_type == LOSS_SSIM) {
+                /* Global single-patch SSIM on luminance (timing benchmark) */
+                double sr=0, st=0, sr2=0, st2=0, srt=0;
+                for (int k = 0; k < npix; k++) {
+                    double lr = 0.299*scratch->data[k*3+0] + 0.587*scratch->data[k*3+1]
+                              + 0.114*scratch->data[k*3+2];
+                    double lt = 0.299*target->data[k*3+0]  + 0.587*target->data[k*3+1]
+                              + 0.114*target->data[k*3+2];
+                    sr += lr; st += lt; sr2 += lr*lr; st2 += lt*lt; srt += lr*lt;
+                }
+                double N = (double)npix;
+                double mu_r = sr/N, mu_t = st/N;
+                double vr = sr2/N - mu_r*mu_r, vt = st2/N - mu_t*mu_t;
+                double cov = srt/N - mu_r*mu_t;
+                double C1=1e-4, C2=9e-4;
+                double ssim = ((2*mu_r*mu_t+C1)*(2*cov+C2))
+                            / ((mu_r*mu_r+mu_t*mu_t+C1)*(vr+vt+C2));
+                seq_losses[c] = 1.0 - ssim;
+            } else if (loss_type == LOSS_L4) {
+                double acc = 0.0;
+                for (int k = 0; k < npix_rgb; k++) {
+                    double d = (double)scratch->data[k] - (double)target->data[k];
+                    double d2 = d * d;
+                    acc += d2 * d2;
+                }
+                seq_losses[c] = acc / npix_rgb;
+            } else {
+                double acc = 0.0;
+                for (int k = 0; k < npix_rgb; k++) {
+                    double d = (double)scratch->data[k] - (double)target->data[k];
+                    acc += d * d;
+                }
+                seq_losses[c] = acc / npix_rgb;
             }
-            seq_losses[c] = mse / npix;
         }
     }
     double seq_mean = (profiler_now() - seq_start) / N_BENCH * 1000.0;
@@ -158,11 +190,13 @@ static void benchmark_rendering(const Image *target, Profiler *prof,
     prof->counts[BUCKET_RENDER] = 0;
     (void)seq_losses;
 
-    batch_compute_loss_gpu(fake_pop, pop_size, bat_losses, target->w, target->h, NULL);
+    batch_compute_loss_gpu(fake_pop, pop_size, bat_losses,
+                           target->w, target->h, NULL, loss_type);
 
     double bat_start = profiler_now();
     for (int r = 0; r < N_BENCH; r++)
-        batch_compute_loss_gpu(fake_pop, pop_size, bat_losses, target->w, target->h, NULL);
+        batch_compute_loss_gpu(fake_pop, pop_size, bat_losses,
+                               target->w, target->h, NULL, loss_type);
     double bat_mean = (profiler_now() - bat_start) / N_BENCH * 1000.0;
     (void)bat_losses;
 
@@ -171,16 +205,19 @@ static void benchmark_rendering(const Image *target, Profiler *prof,
     free(fv); free(fc);
     image_free(scratch);
 
-    printf("\n=== Render Benchmark (%d iterations, %dx%d image) ===\n",
-           N_BENCH, target->w, target->h);
+    const char *loss_name = (loss_type == LOSS_SSIM) ? "SSIM"
+                          : (loss_type == LOSS_L4)  ? "L4" : "MSE";
+    printf("\n=== Render Benchmark (%d iterations, %dx%d image, loss=%s) ===\n",
+           N_BENCH, target->w, target->h, loss_name);
     printf("\n  [Single render]\n");
     printf("    CPU render     : %8.3f ms/call\n", cpu_mean);
     printf("    GPU render     : %8.3f ms/call\n", gpu_mean);
     printf("    Speedup        : %.2fx\n", cpu_mean / gpu_mean);
     printf("\n  [Full-population fitness (%d chromosomes)]\n", pop_size);
-    printf("    Sequential GPU : %8.3f ms/gen  (%d renders + CPU MSE)\n",
-           seq_mean, pop_size);
-    printf("    Batch GPU      : %8.3f ms/gen  (1 kernel, MSE on GPU)\n", bat_mean);
+    printf("    Sequential GPU : %8.3f ms/gen  (%d renders + CPU %s)\n",
+           seq_mean, pop_size, loss_name);
+    printf("    Batch GPU      : %8.3f ms/gen  (1 kernel, %s, %d GPU(s))\n",
+           bat_mean, loss_name, cuda_num_gpus());
     printf("    Speedup        : %.2fx\n", seq_mean / bat_mean);
     printf("=====================================================\n\n");
 }
@@ -279,6 +316,7 @@ int main(int argc, char **argv)
     benchmark_rendering(target, &prof, &cfg);
 
     /* Run GA — resume from checkpoint if one exists */
+    double wall_start = profiler_now();
     GA ga;
     ga_init(&ga, target, &prof, &cfg);
     if (ga_load(&ga, save_file) == 0)
@@ -318,12 +356,15 @@ int main(int argc, char **argv)
     GAStats final_st = ga_stats(&ga);
     save_sidebyside(target, GA_CHROM(&ga, final_st.best_idx), final_file, &prof, &cfg);
 
+    double wall_elapsed = profiler_now() - wall_start;
     logprintf("\nDone. Final loss=%.6f  Saved %s\n", final_st.best_loss, final_file);
+    logprintf("Wall time    : %.2f s  (%d generations)\n",
+              wall_elapsed, final_st.generation);
 
     /* Fix up profiler: optimize bucket should exclude render time */
     prof.totals[BUCKET_OPTIMIZE] -= prof.totals[BUCKET_RENDER];
 
-    profiler_report(&prof);
+    profiler_report(&prof, g_log);
 
     ga_save(&ga, save_file);
     ga_destroy(&ga);

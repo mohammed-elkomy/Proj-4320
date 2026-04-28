@@ -81,33 +81,37 @@ void profiler_add(Profiler *p, int bucket, double elapsed) {
     p->counts[bucket] += 1;
 }
 
-void profiler_report(Profiler *p) {
+void profiler_report(Profiler *p, FILE *log) {
     static const char *names[] = { "render", "optimize (net, excl. render)" };
 
     double total_wall = 0.0;
     for (int i = 0; i < BUCKET_COUNT; i++)
         total_wall += p->totals[i];
 
-    printf("\n");
-    printf("--------------------------------------------------------------\n");
-    printf("  Timing Report\n");
-    printf("--------------------------------------------------------------\n");
-    printf("%-32s %10s %8s %10s %10s\n",
-           "Bucket", "Total (s)", "Calls", "Mean (ms)", "% of wall");
-    printf("--------------------------------------------------------------\n");
+#define PROF_PRINT(fmt, ...) \
+    do { printf(fmt, ##__VA_ARGS__); if (log) fprintf(log, fmt, ##__VA_ARGS__); } while(0)
+
+    PROF_PRINT("\n");
+    PROF_PRINT("--------------------------------------------------------------\n");
+    PROF_PRINT("  Timing Report\n");
+    PROF_PRINT("--------------------------------------------------------------\n");
+    PROF_PRINT("%-32s %10s %8s %10s %10s\n",
+               "Bucket", "Total (s)", "Calls", "Mean (ms)", "% of wall");
+    PROF_PRINT("--------------------------------------------------------------\n");
 
     for (int i = 0; i < BUCKET_COUNT; i++) {
         double total   = p->totals[i];
         int    calls   = p->counts[i];
         double mean_ms = calls > 0 ? (total / calls * 1000.0) : 0.0;
         double pct     = total_wall > 0 ? (total / total_wall * 100.0) : 0.0;
-        printf("%-32s %10.4f %8d %10.4f %9.1f%%\n",
-               names[i], total, calls, mean_ms, pct);
+        PROF_PRINT("%-32s %10.4f %8d %10.4f %9.1f%%\n",
+                   names[i], total, calls, mean_ms, pct);
     }
 
-    printf("--------------------------------------------------------------\n");
-    printf("%-32s %10.4f\n", "TOTAL", total_wall);
-    printf("--------------------------------------------------------------\n\n");
+    PROF_PRINT("--------------------------------------------------------------\n");
+    PROF_PRINT("%-32s %10.4f\n", "TOTAL", total_wall);
+    PROF_PRINT("--------------------------------------------------------------\n\n");
+#undef PROF_PRINT
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -245,6 +249,8 @@ void app_config_init(AppConfig *cfg) {
     cfg->stagnation_abs_tol  = 1e-7;
     cfg->crossover_prob      = 0.95;
     cfg->alpha_init          = 0.15;
+    cfg->loss_type           = LOSS_MSE;
+    cfg->num_gpus            = 0;      /* 0 = use all available */
     cfg->visualise_every     = 10000;
     strncpy(cfg->run_prefix, "run", sizeof(cfg->run_prefix) - 1);
     cfg->run_prefix[sizeof(cfg->run_prefix) - 1] = '\0';
@@ -301,6 +307,19 @@ int app_config_load(AppConfig *cfg, const char *path) {
         else if (!strcmp(key, "CROSSOVER_PROB"))     cfg->crossover_prob     = atof(val);
         else if (!strcmp(key, "ALPHA_INIT"))         cfg->alpha_init         = atof(val);
         else if (!strcmp(key, "VISUALISE_EVERY"))    cfg->visualise_every    = atoi(val);
+        else if (!strcmp(key, "NUM_GPUS"))           cfg->num_gpus           = atoi(val);
+        else if (!strcmp(key, "LOSS_TYPE")) {
+            /* Accept numeric index (0,1,2) or string name */
+            if (val[0] >= '0' && val[0] <= '9') {
+                cfg->loss_type = atoi(val);
+            } else if (!strcmp(val, "l4")   || !strcmp(val, "L4"))   {
+                cfg->loss_type = LOSS_L4;
+            } else if (!strcmp(val, "ssim") || !strcmp(val, "SSIM")) {
+                cfg->loss_type = LOSS_SSIM;
+            } else {
+                cfg->loss_type = LOSS_MSE;
+            }
+        }
         else if (!strcmp(key, "RUN_PREFIX")) {
             strncpy(cfg->run_prefix, val, sizeof(cfg->run_prefix) - 1);
             cfg->run_prefix[sizeof(cfg->run_prefix) - 1] = '\0';
@@ -329,6 +348,10 @@ void app_config_save(const AppConfig *cfg, const char *path) {
     fprintf(f, "STAGNATION_ABS_TOL  = %g\n\n", cfg->stagnation_abs_tol);
     fprintf(f, "CROSSOVER_PROB      = %g\n", cfg->crossover_prob);
     fprintf(f, "ALPHA_INIT          = %g\n", cfg->alpha_init);
+    fprintf(f, "LOSS_TYPE           = %s\n",
+            cfg->loss_type == LOSS_SSIM ? "ssim" :
+            cfg->loss_type == LOSS_L4   ? "l4"   : "mse");
+    fprintf(f, "NUM_GPUS            = %d\n", cfg->num_gpus);
     fprintf(f, "VISUALISE_EVERY     = %d\n", cfg->visualise_every);
     fclose(f);
 }

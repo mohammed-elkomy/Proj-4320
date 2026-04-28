@@ -8,3 +8,5 @@ proj-c/triangle_ga
 /cmake-build-debug/
 CMakeLists.txt
 /output/
+/27-4.md
+/input/cut.ppm

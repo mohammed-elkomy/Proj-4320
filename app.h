@@ -2,6 +2,7 @@
 #define APP_H
 
 #include <stdint.h>
+#include <stdio.h>
 
 /* Allow this header to be included from both C and C++ (nvcc) translation units */
 #ifdef __cplusplus
@@ -63,7 +64,31 @@ typedef struct {
 void   profiler_init(Profiler *p);
 double profiler_now(void);
 void   profiler_add(Profiler *p, int bucket, double elapsed);
-void   profiler_report(Profiler *p);
+void   profiler_report(Profiler *p, FILE *log); /* log may be NULL */
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  Loss function identifiers
+ *
+ *  LOSS_MSE  Mean squared error: mean((pred - target)^2) per channel.
+ *            Balanced; does not strongly penalise the worst pixel errors.
+ *
+ *  LOSS_L4   Quartic (L4) loss: mean((pred - target)^4) per channel.
+ *            Penalises large errors with the 4th power — far more aggressive
+ *            than MSE.  A pixel that is twice as wrong costs 2^4 = 16× more
+ *            instead of MSE's 2^2 = 4×.  Drives the worst-case pixels down
+ *            at the cost of caring less about near-zero residuals.
+ *
+ *  LOSS_SSIM Per-channel RGB SSIM loss = 1 − mean(SSIM_R, SSIM_G, SSIM_B).
+ *            SSIM jointly measures mean (luminance), variance (contrast), and
+ *            cross-covariance (structure) within each 16×16 pixel patch.
+ *            Applied independently to R, G, B so that colour errors are
+ *            penalised — luminance-only SSIM lets the GA match brightness
+ *            while getting hues wrong, producing a colour-negative appearance.
+ *            Range [0, 2]; perfect match → 0.
+ * ══════════════════════════════════════════════════════════════════════════ */
+#define LOSS_MSE  0
+#define LOSS_L4   1
+#define LOSS_SSIM 2
 
 /* ══════════════════════════════════════════════════════════════════════════
  *  Runtime configuration
@@ -88,6 +113,9 @@ void   profiler_report(Profiler *p);
  *  ALPHA_INIT        Fixed alpha per triangle (not mutated).
  *  VISUALISE_EVERY   Save side-by-side PPM every N generations.
  *  RUN_PREFIX        Label prepended to the timestamped output folder.
+ *  LOSS_TYPE         Loss function: "mse" (0), "l4" (1), or "ssim" (2).
+ *                    Accepts either the string name or the numeric index.
+ *  NUM_GPUS          GPUs to use for batch fitness evaluation. 0 = all available.
  *
  *  ── Derived (set by app_config_finalize, not parsed from file) ────────────
  *  n_vertex_genes    N_TRIANGLES * 6
@@ -108,6 +136,12 @@ typedef struct {
     double stagnation_abs_tol;
     double crossover_prob;
     double alpha_init;
+
+    /* loss */
+    int    loss_type;          /* LOSS_MSE, LOSS_L4, or LOSS_SSIM */
+
+    /* GPU */
+    int    num_gpus;           /* 0 = use all available */
 
     /* output */
     int    visualise_every;
@@ -209,11 +243,12 @@ int    rng_int(int n);
 /* ══════════════════════════════════════════════════════════════════════════
  *  CUDA renderer lifecycle
  * ══════════════════════════════════════════════════════════════════════════ */
+int  cuda_num_gpus(void);
 void cuda_renderer_init(const Image *target, const AppConfig *cfg);
 void cuda_renderer_free(void);
 void batch_compute_loss_gpu(const double *pop, int count,
                             double *losses_out, int w, int h,
-                            Profiler *prof);
+                            Profiler *prof, int loss_type);  /* LOSS_MSE/L4/SSIM */
 
 #ifdef __cplusplus
 }

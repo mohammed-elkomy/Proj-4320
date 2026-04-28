@@ -7,6 +7,59 @@
 #include <math.h>
 #include <float.h>
 
+/* ── Loss helpers ─────────────────────────────────────────────────────────── */
+
+static double loss_mse(const float *rendered, const float *target, int n)
+{
+    double acc = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = (double)rendered[i] - (double)target[i];
+        acc += d * d;
+    }
+    return acc / n;
+}
+
+/* Quartic (L4) loss: sum(d^4)/n.  A pixel twice as wrong costs 16× instead
+ * of MSE's 4×, aggressively penalising the worst-case errors. */
+static double loss_l4(const float *rendered, const float *target, int n)
+{
+    double acc = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = (double)rendered[i] - (double)target[i];
+        double d2 = d * d;
+        acc += d2 * d2;
+    }
+    return acc / n;
+}
+
+/* Per-channel RGB SSIM loss = 1 − mean(SSIM_R, SSIM_G, SSIM_B).
+ * Computes SSIM independently for each colour channel so that hue errors
+ * are penalised — luminance-only SSIM lets the GA match brightness while
+ * getting colours completely wrong, producing a colour-negative appearance.
+ * Uses a single global patch (whole image) for the CPU fallback path. */
+static double loss_ssim(const float *rendered, const float *target, int w, int h)
+{
+    const double C1 = 1e-4, C2 = 9e-4;
+    double N = (double)(w * h);
+    double ssim_sum = 0.0;
+
+    for (int ch = 0; ch < 3; ch++) {
+        double sr=0, st=0, sr2=0, st2=0, srt=0;
+        for (int i = 0; i < (int)N; i++) {
+            double r = rendered[i*3 + ch];
+            double t = target  [i*3 + ch];
+            sr += r; st += t; sr2 += r*r; st2 += t*t; srt += r*t;
+        }
+        double mu_r = sr/N, mu_t = st/N;
+        double var_r = sr2/N - mu_r*mu_r;
+        double var_t = st2/N - mu_t*mu_t;
+        double cov   = srt/N - mu_r*mu_t;
+        ssim_sum += ((2*mu_r*mu_t + C1) * (2*cov + C2))
+                  / ((mu_r*mu_r + mu_t*mu_t + C1) * (var_r + var_t + C2));
+    }
+    return 1.0 - ssim_sum / 3.0;
+}
+
 /* ── Loss ─────────────────────────────────────────────────────────────────── */
 
 double compute_loss(const double *x, const Image *target, Image *scratch,
@@ -19,17 +72,17 @@ double compute_loss(const double *x, const Image *target, Image *scratch,
     render_triangles(verts, cols, scratch, prof);
 
     int n = target->w * target->h * 3;
-    double mse = 0.0;
-    const float *a = scratch->data;
-    const float *b = target->data;
-    for (int i = 0; i < n; i++) {
-        double d = (double)a[i] - (double)b[i];
-        mse += d * d;
-    }
+    double result;
+    if (cfg->loss_type == LOSS_SSIM)
+        result = loss_ssim(scratch->data, target->data, target->w, target->h);
+    else if (cfg->loss_type == LOSS_L4)
+        result = loss_l4(scratch->data, target->data, n);
+    else
+        result = loss_mse(scratch->data, target->data, n);
 
     free(verts);
     free(cols);
-    return mse / n;
+    return result;
 }
 
 /* ── Ground truth TESTING ONLY ────────────────────────────────────────────── */
@@ -176,7 +229,8 @@ void ga_init(GA *ga, Image *target, Profiler *prof, const AppConfig *cfg)
     }
 
     batch_compute_loss_gpu(ga->population, cfg->pop_size,
-                           ga->fitnesses, target->w, target->h, prof);
+                           ga->fitnesses, target->w, target->h, prof,
+                           cfg->loss_type);
 
     for (int i = 0; i < cfg->pop_size; i++)
         if (ga->fitnesses[i] < ga->best_loss)
@@ -262,7 +316,8 @@ GAStats ga_step(GA *ga)
             ga->population + (size_t)(elite_boundary + 1) * n_genes,
             n_replaced,
             ga->fitnesses + elite_boundary + 1,
-            ga->target->w, ga->target->h, ga->prof);
+            ga->target->w, ga->target->h, ga->prof,
+            cfg->loss_type);
 
     ga->generation++;
 
