@@ -85,10 +85,27 @@ void   profiler_report(Profiler *p, FILE *log); /* log may be NULL */
  *            penalised — luminance-only SSIM lets the GA match brightness
  *            while getting hues wrong, producing a colour-negative appearance.
  *            Range [0, 2]; perfect match → 0.
+ *
+ *  LOSS_LOGLL  Binary cross-entropy (log-likelihood) per RGB channel:
+ *              mean(-t·log(p+ε) - (1-t)·log(1-p+ε)).
+ *              Treats each rendered pixel channel as a probability in [0,1]
+ *              and computes BCE against the target.  More aggressive than MSE
+ *              near channel extremes: predicting 0.01 for a target of 1.0
+ *              costs log(0.01)≈4.6 nats vs MSE's 0.98²≈0.96.
+ *
+ *  LOSS_WMSE   Area-weighted MSE: MSE × (total_triangle_area)^WMSE_POWER.
+ *              Total area is the sum of triangle areas in normalised [0,1]²
+ *              space (can exceed 1 when triangles overlap or are large).
+ *              Penalises chromosomes with large triangles, pushing the GA
+ *              toward finer-grained coverage while still minimising pixel error.
+ *              WMSE_POWER (default 0.5) dampens the area weight so it does not
+ *              overwhelm the MSE signal.
  * ══════════════════════════════════════════════════════════════════════════ */
-#define LOSS_MSE  0
-#define LOSS_L4   1
-#define LOSS_SSIM 2
+#define LOSS_MSE   0
+#define LOSS_L4    1
+#define LOSS_SSIM  2
+#define LOSS_LOGLL 3
+#define LOSS_WMSE  4
 
 /* ══════════════════════════════════════════════════════════════════════════
  *  Runtime configuration
@@ -113,8 +130,13 @@ void   profiler_report(Profiler *p, FILE *log); /* log may be NULL */
  *  ALPHA_INIT        Fixed alpha per triangle (not mutated).
  *  VISUALISE_EVERY   Save side-by-side PPM every N generations.
  *  RUN_PREFIX        Label prepended to the timestamped output folder.
- *  LOSS_TYPE         Loss function: "mse" (0), "l4" (1), or "ssim" (2).
+ *  TARGET_FILE       Path to the target PPM image (default: input/target.ppm).
+ *  LOSS_TYPE         Loss function: "mse" (0), "l4" (1), "ssim" (2),
+ *                    "logll" (3), or "wmse" (4).
  *                    Accepts either the string name or the numeric index.
+ *  WMSE_POWER        Exponent for area weight in LOSS_WMSE (default 0.5).
+ *                    weight = (total_normalised_area + ε)^WMSE_POWER.
+ *                    Larger values amplify area penalty; 0 → pure MSE.
  *  NUM_GPUS          GPUs to use for batch fitness evaluation. 0 = all available.
  *
  *  ── Derived (set by app_config_finalize, not parsed from file) ────────────
@@ -138,7 +160,8 @@ typedef struct {
     double alpha_init;
 
     /* loss */
-    int    loss_type;          /* LOSS_MSE, LOSS_L4, or LOSS_SSIM */
+    int    loss_type;          /* LOSS_MSE, LOSS_L4, LOSS_SSIM, LOSS_LOGLL, LOSS_WMSE */
+    double wmse_power;         /* exponent for area weight in LOSS_WMSE; default 0.5   */
 
     /* GPU */
     int    num_gpus;           /* 0 = use all available */
@@ -146,6 +169,7 @@ typedef struct {
     /* output */
     int    visualise_every;
     char   run_prefix[64];
+    char   target_file[256];
 
     /* derived — populated by app_config_finalize, not parsed */
     int    n_vertex_genes;
@@ -248,7 +272,8 @@ void cuda_renderer_init(const Image *target, const AppConfig *cfg);
 void cuda_renderer_free(void);
 void batch_compute_loss_gpu(const double *pop, int count,
                             double *losses_out, int w, int h,
-                            Profiler *prof, int loss_type);  /* LOSS_MSE/L4/SSIM */
+                            Profiler *prof, int loss_type,
+                            double wmse_power);
 
 #ifdef __cplusplus
 }

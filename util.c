@@ -250,10 +250,13 @@ void app_config_init(AppConfig *cfg) {
     cfg->crossover_prob      = 0.95;
     cfg->alpha_init          = 0.15;
     cfg->loss_type           = LOSS_MSE;
+    cfg->wmse_power          = 0.5;
     cfg->num_gpus            = 0;      /* 0 = use all available */
     cfg->visualise_every     = 10000;
-    strncpy(cfg->run_prefix, "run", sizeof(cfg->run_prefix) - 1);
+    strncpy(cfg->run_prefix,  "run",               sizeof(cfg->run_prefix)  - 1);
     cfg->run_prefix[sizeof(cfg->run_prefix) - 1] = '\0';
+    strncpy(cfg->target_file, "input/target.ppm",  sizeof(cfg->target_file) - 1);
+    cfg->target_file[sizeof(cfg->target_file) - 1] = '\0';
     /* derived fields initialised by finalize */
     cfg->n_vertex_genes = 0;
     cfg->n_color_genes  = 0;
@@ -309,20 +312,29 @@ int app_config_load(AppConfig *cfg, const char *path) {
         else if (!strcmp(key, "VISUALISE_EVERY"))    cfg->visualise_every    = atoi(val);
         else if (!strcmp(key, "NUM_GPUS"))           cfg->num_gpus           = atoi(val);
         else if (!strcmp(key, "LOSS_TYPE")) {
-            /* Accept numeric index (0,1,2) or string name */
+            /* Accept numeric index (0-4) or string name */
             if (val[0] >= '0' && val[0] <= '9') {
                 cfg->loss_type = atoi(val);
-            } else if (!strcmp(val, "l4")   || !strcmp(val, "L4"))   {
+            } else if (!strcmp(val, "l4")    || !strcmp(val, "L4"))    {
                 cfg->loss_type = LOSS_L4;
-            } else if (!strcmp(val, "ssim") || !strcmp(val, "SSIM")) {
+            } else if (!strcmp(val, "ssim")  || !strcmp(val, "SSIM"))  {
                 cfg->loss_type = LOSS_SSIM;
+            } else if (!strcmp(val, "logll") || !strcmp(val, "LOGLL")) {
+                cfg->loss_type = LOSS_LOGLL;
+            } else if (!strcmp(val, "wmse")  || !strcmp(val, "WMSE"))  {
+                cfg->loss_type = LOSS_WMSE;
             } else {
                 cfg->loss_type = LOSS_MSE;
             }
         }
+        else if (!strcmp(key, "WMSE_POWER"))         cfg->wmse_power         = atof(val);
         else if (!strcmp(key, "RUN_PREFIX")) {
             strncpy(cfg->run_prefix, val, sizeof(cfg->run_prefix) - 1);
             cfg->run_prefix[sizeof(cfg->run_prefix) - 1] = '\0';
+        }
+        else if (!strcmp(key, "TARGET_FILE")) {
+            strncpy(cfg->target_file, val, sizeof(cfg->target_file) - 1);
+            cfg->target_file[sizeof(cfg->target_file) - 1] = '\0';
         }
     }
     fclose(f);
@@ -337,7 +349,8 @@ void app_config_save(const AppConfig *cfg, const char *path) {
     fprintf(f, "# Hyperparameters — saved at: %s", ctime(&now));
     fprintf(f, "# Derived (not parsed): n_vertex_genes=%d  n_color_genes=%d  n_genes=%d\n\n",
             cfg->n_vertex_genes, cfg->n_color_genes, cfg->n_genes);
-    fprintf(f, "RUN_PREFIX          = %s\n\n", cfg->run_prefix);
+    fprintf(f, "RUN_PREFIX          = %s\n", cfg->run_prefix);
+    fprintf(f, "TARGET_FILE         = %s\n\n", cfg->target_file);
     fprintf(f, "N_TRIANGLES         = %d\n", cfg->n_triangles);
     fprintf(f, "POP_SIZE            = %d\n", cfg->pop_size);
     fprintf(f, "DISC_COUNT          = %d\n\n", cfg->disc_count);
@@ -349,8 +362,11 @@ void app_config_save(const AppConfig *cfg, const char *path) {
     fprintf(f, "CROSSOVER_PROB      = %g\n", cfg->crossover_prob);
     fprintf(f, "ALPHA_INIT          = %g\n", cfg->alpha_init);
     fprintf(f, "LOSS_TYPE           = %s\n",
-            cfg->loss_type == LOSS_SSIM ? "ssim" :
-            cfg->loss_type == LOSS_L4   ? "l4"   : "mse");
+            cfg->loss_type == LOSS_SSIM  ? "ssim"  :
+            cfg->loss_type == LOSS_L4    ? "l4"    :
+            cfg->loss_type == LOSS_LOGLL ? "logll" :
+            cfg->loss_type == LOSS_WMSE  ? "wmse"  : "mse");
+    fprintf(f, "WMSE_POWER          = %g\n", cfg->wmse_power);
     fprintf(f, "NUM_GPUS            = %d\n", cfg->num_gpus);
     fprintf(f, "VISUALISE_EVERY     = %d\n", cfg->visualise_every);
     fclose(f);

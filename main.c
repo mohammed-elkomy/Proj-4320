@@ -22,7 +22,6 @@
 #include <time.h>
 #include <sys/stat.h>
 
-#define TARGET_FILE  "input/target.ppm"
 #define CONFIG_DIR   "config"
 #define DEFAULT_CONF "config/default.conf"
 
@@ -191,12 +190,12 @@ static void benchmark_rendering(const Image *target, Profiler *prof,
     (void)seq_losses;
 
     batch_compute_loss_gpu(fake_pop, pop_size, bat_losses,
-                           target->w, target->h, NULL, loss_type);
+                           target->w, target->h, NULL, loss_type, 0.5);
 
     double bat_start = profiler_now();
     for (int r = 0; r < N_BENCH; r++)
         batch_compute_loss_gpu(fake_pop, pop_size, bat_losses,
-                               target->w, target->h, NULL, loss_type);
+                               target->w, target->h, NULL, loss_type, 0.5);
     double bat_mean = (profiler_now() - bat_start) / N_BENCH * 1000.0;
     (void)bat_losses;
 
@@ -297,15 +296,15 @@ int main(int argc, char **argv)
     rng_seed(42);
 
     /* Load target image */
-    Image *target = image_read_ppm(TARGET_FILE);
+    Image *target = image_read_ppm(cfg.target_file);
     if (!target) {
-        fprintf(stderr, "Error: could not load '%s'.\n", TARGET_FILE);
+        fprintf(stderr, "Error: could not load '%s'.\n", cfg.target_file);
         return 1;
     }
 
     logprintf("Output dir   : %s\n", out_dir);
     logprintf("Target image : %d x %d (loaded from %s)\n",
-              target->w, target->h, TARGET_FILE);
+              target->w, target->h, cfg.target_file);
     logprintf("State vector : length %d  "
               "(%d triangles x (3 vertices x 2 coords + 4 RGBA))\n",
               cfg.n_genes, cfg.n_triangles);

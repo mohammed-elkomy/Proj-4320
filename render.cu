@@ -167,6 +167,19 @@ __device__ __forceinline__ float pixel_loss_l4(float dr, float dg, float db)
     return dr2*dr2 + dg2*dg2 + db2*db2;
 }
 
+/* Binary cross-entropy per channel: -(t*log(p+e) + (1-t)*log(1-p+e)).
+ * Takes raw rendered (cr,cg,cb) and target (tr,tg,tb) values in [0,1].
+ * Uses fast __logf — acceptable precision for fitness comparison. */
+__device__ __forceinline__ float pixel_loss_logll(
+    float cr, float cg, float cb,
+    float tr, float tg, float tb)
+{
+    const float eps = 1e-7f;
+    return -(tr * __logf(cr + eps) + (1.f - tr) * __logf(1.f - cr + eps))
+           -(tg * __logf(cg + eps) + (1.f - tg) * __logf(1.f - cg + eps))
+           -(tb * __logf(cb + eps) + (1.f - tb) * __logf(1.f - cb + eps));
+}
+
 /* ════════════════════════════════════════════════════════════════════════
  *  Kernel 2 — batch render + inline loss  (GA fitness evaluations)
  *
@@ -244,6 +257,9 @@ __global__ void batch_render_loss_kernel(
 
         if (LOSS_TYPE == LOSS_L4)
             pixel_err = pixel_loss_l4(dr, dg, db);
+        else if (LOSS_TYPE == LOSS_LOGLL)
+            pixel_err = pixel_loss_logll(cr, cg, cb,
+                                         target[idx], target[idx+1], target[idx+2]);
         else
             pixel_err = pixel_loss_mse(dr, dg, db);
     }
@@ -403,6 +419,106 @@ __global__ void batch_render_ssim_kernel(
 
 
 /* ════════════════════════════════════════════════════════════════════════
+ *  Kernel 4 — batch render + area-weighted MSE  (LOSS_WMSE)
+ *
+ *  Renders each chromosome and accumulates the per-pixel MSE sum exactly
+ *  like the MSE/L4 template.  Thread 0 of every block additionally reads
+ *  the chromosome's triangle vertices from shared memory to compute the
+ *  total normalised triangle area, then scales the block's partial MSE
+ *  sum before the atomicAdd:
+ *
+ *    weight      = (total_area_in_[0,1]^2_space + 1e-7)^wmse_power
+ *    contribution = block_mse_partial_sum * weight
+ *
+ *  After all blocks: losses[chrom] = weight * total_mse_sum.
+ *  Host normalises by w*h*3 giving:  loss = MSE * weight.
+ *
+ *  Because every block loads the same chromosome's vertices, all
+ *  thread-0s compute the identical weight — the decomposition is exact.
+ * ════════════════════════════════════════════════════════════════════════ */
+__global__ void batch_render_wmse_kernel(
+    const float * __restrict__ all_verts,
+    const float * __restrict__ all_colors,
+    const float * __restrict__ target,
+    float       *              losses,
+    int w, int h, int n_triangles, int n_vertex_genes, int n_color_genes,
+    float wmse_power)
+{
+    int chrom = blockIdx.z;
+
+    const float *verts  = all_verts  + chrom * n_vertex_genes;
+    const float *colors = all_colors + chrom * n_color_genes;
+
+    extern __shared__ float sdata[];
+    float *sv       = sdata;
+    float *sc       = sdata + n_vertex_genes;
+    float *s_reduce = sdata + n_vertex_genes + n_color_genes;
+
+    int tid        = threadIdx.y * blockDim.x + threadIdx.x;
+    int block_size = blockDim.x  * blockDim.y;
+
+    for (int i = tid; i < n_vertex_genes; i += block_size) sv[i] = verts[i];
+    for (int i = tid; i < n_color_genes;  i += block_size) sc[i] = colors[i];
+    __syncthreads();
+
+    int px = blockIdx.x * blockDim.x + threadIdx.x;
+    int py = blockIdx.y * blockDim.y + threadIdx.y;
+
+    float pixel_err = 0.f;
+
+    if (px < w && py < h) {
+        float cr = 1.f, cg = 1.f, cb = 1.f;
+
+        for (int t = 0; t < n_triangles; t++) {
+            float x0=sv[t*6+0]*w, y0=sv[t*6+1]*h;
+            float x1=sv[t*6+2]*w, y1=sv[t*6+3]*h;
+            float x2=sv[t*6+4]*w, y2=sv[t*6+5]*h;
+            float tr=sc[t*4+0], tg=sc[t*4+1], tb=sc[t*4+2], ta=sc[t*4+3];
+
+            float v0x=x2-x0, v0y=y2-y0, v1x=x1-x0, v1y=y1-y0;
+            float d00=v0x*v0x+v0y*v0y, d01=v0x*v1x+v0y*v1y, d11=v1x*v1x+v1y*v1y;
+            float denom=d00*d11-d01*d01;
+            if (fabsf(denom)<1e-10f) continue;
+            float inv=1.f/denom, v2x=(float)px-x0, v2y=(float)py-y0;
+            float d02=v0x*v2x+v0y*v2y, d12=v1x*v2x+v1y*v2y;
+            float u=(d11*d02-d01*d12)*inv, v=(d00*d12-d01*d02)*inv;
+            if (u>=0&&v>=0&&u+v<=1) {
+                float a1=1.f-ta;
+                cr=tr*ta+cr*a1; cg=tg*ta+cg*a1; cb=tb*ta+cb*a1;
+            }
+        }
+
+        int idx=(py*w+px)*3;
+        float dr=cr-target[idx], dg=cg-target[idx+1], db=cb-target[idx+2];
+        pixel_err = dr*dr + dg*dg + db*db;
+    }
+
+    /* Tree reduction of per-pixel MSE contributions */
+    s_reduce[tid] = pixel_err;
+    __syncthreads();
+    for (int s = block_size >> 1; s > 0; s >>= 1) {
+        if (tid < s) s_reduce[tid] += s_reduce[tid + s];
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        /* Compute total triangle area in normalised [0,1]^2 space.
+         * sv[] is still valid here — no code has overwritten shared mem. */
+        float norm_area = 0.f;
+        for (int t = 0; t < n_triangles; t++) {
+            float ax = sv[t*6+2] - sv[t*6+0];
+            float ay = sv[t*6+3] - sv[t*6+1];
+            float bx = sv[t*6+4] - sv[t*6+0];
+            float by = sv[t*6+5] - sv[t*6+1];
+            norm_area += fabsf(ax*by - ay*bx) * 0.5f;
+        }
+        float weight = 1.f + powf(norm_area, wmse_power);
+        atomicAdd(&losses[chrom], s_reduce[0] * weight);
+    }
+}
+
+
+/* ════════════════════════════════════════════════════════════════════════
  *  Public API
  * ════════════════════════════════════════════════════════════════════════ */
 
@@ -426,7 +542,23 @@ extern "C" void cuda_renderer_init(const Image *target, const AppConfig *cfg)
 
     /* ── Select GPUs ──────────────────────────────────────────────────── */
     int n_avail = 0;
-    CUDA_CHECK(cudaGetDeviceCount(&n_avail));
+    {
+        cudaError_t _e = cudaGetDeviceCount(&n_avail);
+        if (_e == cudaErrorInitializationError) {
+            fprintf(stderr,
+                "[CUDA] Driver initialization failed (cudaErrorInitializationError).\n"
+                "       This usually means you are not running on a GPU node.\n"
+                "       On AiMOS/Slurm: make sure your job requests a GPU,\n"
+                "       e.g.  #SBATCH --gres=gpu:1\n"
+                "       Verify with: nvidia-smi\n");
+            exit(1);
+        }
+        if (_e != cudaSuccess) {
+            fprintf(stderr, "[CUDA] cudaGetDeviceCount failed: %s\n",
+                    cudaGetErrorString(_e));
+            exit(1);
+        }
+    }
     if (n_avail == 0) { fprintf(stderr, "[CUDA] No CUDA devices found.\n"); exit(1); }
 
     int requested = cfg->num_gpus;
@@ -566,7 +698,8 @@ extern "C" void render_triangles(const float *vertices_flat, const float *colors
  */
 extern "C" void batch_compute_loss_gpu(const double *pop, int count,
                                         double *losses_out, int w, int h,
-                                        Profiler *prof, int loss_type)
+                                        Profiler *prof, int loss_type,
+                                        double wmse_power)
 {
     double t0 = profiler_now();
 
@@ -628,10 +761,20 @@ extern "C" void batch_compute_loss_gpu(const double *pop, int count,
             batch_render_ssim_kernel<<<grid, block_ssim, smem_ssim, ctx->stream>>>(
                 ctx->d_all_verts, ctx->d_all_colors, ctx->d_target, ctx->d_losses,
                 w, h, g_n_triangles, g_n_vertex_genes, g_n_color_genes);
+        } else if (loss_type == LOSS_WMSE) {
+            dim3 grid((w+RENDER_BLK-1)/RENDER_BLK, (h+RENDER_BLK-1)/RENDER_BLK, n);
+            batch_render_wmse_kernel<<<grid, block_loss, smem_pixloss, ctx->stream>>>(
+                ctx->d_all_verts, ctx->d_all_colors, ctx->d_target, ctx->d_losses,
+                w, h, g_n_triangles, g_n_vertex_genes, g_n_color_genes,
+                (float)wmse_power);
         } else {
             dim3 grid((w+RENDER_BLK-1)/RENDER_BLK, (h+RENDER_BLK-1)/RENDER_BLK, n);
             if (loss_type == LOSS_L4)
                 batch_render_loss_kernel<LOSS_L4><<<grid, block_loss, smem_pixloss, ctx->stream>>>(
+                    ctx->d_all_verts, ctx->d_all_colors, ctx->d_target, ctx->d_losses,
+                    w, h, g_n_triangles, g_n_vertex_genes, g_n_color_genes);
+            else if (loss_type == LOSS_LOGLL)
+                batch_render_loss_kernel<LOSS_LOGLL><<<grid, block_loss, smem_pixloss, ctx->stream>>>(
                     ctx->d_all_verts, ctx->d_all_colors, ctx->d_target, ctx->d_losses,
                     w, h, g_n_triangles, g_n_vertex_genes, g_n_color_genes);
             else
@@ -649,6 +792,8 @@ extern "C" void batch_compute_loss_gpu(const double *pop, int count,
     }
 
     /* ── Phase 2: sync each GPU and assemble losses_out[] ────────────── */
+    /* SSIM accumulates pixel-weighted values normalised by pixel count;
+     * all other losses accumulate per-channel sums normalised by w*h*3. */
     double norm = (loss_type == LOSS_SSIM) ? (double)w * h
                                            : (double)w * h * 3;
     for (int g = 0; g < g_num_gpus; g++) {

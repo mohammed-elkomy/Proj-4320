@@ -60,6 +60,38 @@ static double loss_ssim(const float *rendered, const float *target, int w, int h
     return 1.0 - ssim_sum / 3.0;
 }
 
+/* Binary cross-entropy (log-likelihood) per channel: mean(-t*log(p+e)-(1-t)*log(1-p+e)).         
+ * Treats each channel as a Bernoulli probability — more aggressive than MSE near 0/1 extremes. */
+static double loss_logll(const float *rendered, const float *target, int n)
+{
+    const double eps = 1e-7;
+    double acc = 0.0;
+    for (int i = 0; i < n; i++) {
+        double p = (double)rendered[i];
+        double t = (double)target[i];
+        acc += -(t * log(p + eps) + (1.0 - t) * log(1.0 - p + eps));
+    }
+    return acc / n;
+}
+
+/* Area-weighted MSE: MSE * (total_normalised_triangle_area + e)^power.
+ * Vertices are in [0,1]^2 space; area is computed there so w/h cancel.
+ * Penalises large triangles — the GA is pushed toward finer coverage. */
+static double loss_wmse(const float *rendered, const float *target, int n,
+                        const float *vertices, int n_triangles, double power)
+{
+    double mse = loss_mse(rendered, target, n);
+    double norm_area = 0.0;
+    for (int t = 0; t < n_triangles; t++) {
+        double ax = vertices[t*6+2] - vertices[t*6+0];
+        double ay = vertices[t*6+3] - vertices[t*6+1];
+        double bx = vertices[t*6+4] - vertices[t*6+0];
+        double by = vertices[t*6+5] - vertices[t*6+1];
+        norm_area += fabs(ax*by - ay*bx) * 0.5;
+    }
+    return mse * (1.0 + pow(norm_area, power));
+}
+
 /* ── Loss ─────────────────────────────────────────────────────────────────── */
 
 double compute_loss(const double *x, const Image *target, Image *scratch,
@@ -77,6 +109,11 @@ double compute_loss(const double *x, const Image *target, Image *scratch,
         result = loss_ssim(scratch->data, target->data, target->w, target->h);
     else if (cfg->loss_type == LOSS_L4)
         result = loss_l4(scratch->data, target->data, n);
+    else if (cfg->loss_type == LOSS_LOGLL)
+        result = loss_logll(scratch->data, target->data, n);
+    else if (cfg->loss_type == LOSS_WMSE)
+        result = loss_wmse(scratch->data, target->data, n,
+                           verts, cfg->n_triangles, cfg->wmse_power);
     else
         result = loss_mse(scratch->data, target->data, n);
 
@@ -230,7 +267,7 @@ void ga_init(GA *ga, Image *target, Profiler *prof, const AppConfig *cfg)
 
     batch_compute_loss_gpu(ga->population, cfg->pop_size,
                            ga->fitnesses, target->w, target->h, prof,
-                           cfg->loss_type);
+                           cfg->loss_type, cfg->wmse_power);
 
     for (int i = 0; i < cfg->pop_size; i++)
         if (ga->fitnesses[i] < ga->best_loss)
@@ -317,7 +354,7 @@ GAStats ga_step(GA *ga)
             n_replaced,
             ga->fitnesses + elite_boundary + 1,
             ga->target->w, ga->target->h, ga->prof,
-            cfg->loss_type);
+            cfg->loss_type, cfg->wmse_power);
 
     ga->generation++;
 
