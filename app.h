@@ -166,6 +166,10 @@ typedef struct {
     /* GPU */
     int    num_gpus;           /* 0 = use all available */
 
+    /* MPI island migration */
+    int    migration_interval; /* 0 = disabled; gens between ring migrations */
+    int    migration_size;     /* chromosomes to exchange per migration event */
+
     /* output */
     int    visualise_every;
     char   run_prefix[64];

@@ -1,19 +1,28 @@
-/*  main.c  —  Simulation driver
+/*  main.c  —  MPI + CUDA GA driver (island model)
  *
- *  Loads input/target.ppm, runs the GA to approximate it with triangles,
- *  saves PPM snapshots, and prints the timing report.
+ *  Each MPI rank runs an independent GA island, seeded differently so that
+ *  islands explore distinct regions of the search space.  Every rank uses
+ *  all CUDA GPUs visible on its node for batch fitness evaluation.
  *
- *  Input:
- *      input/target.ppm
+ *  Every `migration_interval` generations, each rank sends its best
+ *  `migration_size` chromosomes to the next rank in a ring (0→1→…→N−1→0)
+ *  and receives the same number from the previous rank.  Received chromosomes
+ *  replace the worst slots and are immediately re-evaluated before the next
+ *  GA step.
  *
- *  Output (under output/RUN_PREFIX_YYYY-MM-DD_HH-MM-SS/):
- *      progress_ppm/progress_GA_genNNNNNN.ppm  — snapshots
- *      final_result.ppm                        — best result
- *      run.log                                 — console log
- *      ga_checkpoint.bin                       — resume state
+ *  Termination: any island hitting its stopping criterion (stagnation or
+ *  max_generations) causes all islands to stop via MPI_Allreduce(MPI_LOR).
+ *
+ *  File I/O (logs, PPM snapshots, checkpoints, hyperparams) is performed
+ *  exclusively by rank 0.  At the end, the globally best chromosome across
+ *  all ranks is gathered to rank 0 and saved.
+ *
+ *  Usage:
+ *    mpirun -np <N> ./app.o [config_file]
  */
 
 #include "app.h"
+#include <mpi.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -25,16 +34,18 @@
 #define CONFIG_DIR   "config"
 #define DEFAULT_CONF "config/default.conf"
 
-/* Mirror every printf to both stdout and the log file */
-static FILE *g_log = NULL;
+static int   g_world_rank = 0;
+static int   g_world_size = 1;
+static FILE *g_log        = NULL;
 
+/* ── Logging: stdout + log file, rank 0 only ────────────────────────────── */
 static void logprintf(const char *fmt, ...)
 {
+    if (g_world_rank != 0) return;
     va_list args;
     va_start(args, fmt);
     vprintf(fmt, args);
     va_end(args);
-
     if (g_log) {
         va_start(args, fmt);
         vfprintf(g_log, fmt, args);
@@ -43,7 +54,7 @@ static void logprintf(const char *fmt, ...)
     }
 }
 
-/* ── CPU renderer (mirror of render.c, used only for benchmarking) ──────── */
+/* ── CPU renderer (used only by the rendering benchmark on rank 0) ──────── */
 static void render_triangles_cpu(const float *vertices_flat, const float *colors,
                                  Image *dst, const AppConfig *cfg)
 {
@@ -93,7 +104,7 @@ static void render_triangles_cpu(const float *vertices_flat, const float *colors
     }
 }
 
-/* ── Render benchmark: times CPU vs GPU over N_BENCH iterations ─────────── */
+/* ── Render benchmark: CPU vs GPU, rank 0 only ──────────────────────────── */
 #define N_BENCH 50
 
 static void benchmark_rendering(const Image *target, Profiler *prof,
@@ -149,7 +160,6 @@ static void benchmark_rendering(const Image *target, Profiler *prof,
             render_triangles(fv, fc, scratch, prof);
 
             if (loss_type == LOSS_SSIM) {
-                /* Global single-patch SSIM on luminance (timing benchmark) */
                 double sr=0, st=0, sr2=0, st2=0, srt=0;
                 for (int k = 0; k < npix; k++) {
                     double lr = 0.299*scratch->data[k*3+0] + 0.587*scratch->data[k*3+1]
@@ -221,7 +231,7 @@ static void benchmark_rendering(const Image *target, Profiler *prof,
     printf("=====================================================\n\n");
 }
 
-/* ── Save a side-by-side comparison (target | current best) as PPM ──────── */
+/* ── Save side-by-side comparison PPM (target | current best) ───────────── */
 static void save_sidebyside(const Image *target, const double *x,
                             const char *path, Profiler *prof,
                             const AppConfig *cfg)
@@ -250,126 +260,273 @@ static void save_sidebyside(const Image *target, const double *x,
     free(cols);
 }
 
+/* ── MPI ring migration ─────────────────────────────────────────────────────
+ *
+ *  After ga_step, the population is sorted ascending (index 0 = best).
+ *  We send the best `mig` chromosomes to the next rank (right) and receive
+ *  `mig` chromosomes from the previous rank (left).
+ *  Received chromosomes replace the `mig` worst slots and are immediately
+ *  re-evaluated so the next ga_step sees correct fitnesses.
+ */
+static void do_migration(GA *ga, const AppConfig *cfg,
+                         int rank, int nprocs, Profiler *prof)
+{
+    int mig      = cfg->migration_size;
+    int n_genes  = cfg->n_genes;
+    int pop_size = cfg->pop_size;
+
+    if (mig <= 0 || mig > pop_size / 2) return;
+
+    double *send_buf = malloc((size_t)mig * n_genes * sizeof(double));
+    double *recv_buf = malloc((size_t)mig * n_genes * sizeof(double));
+
+    /* Best chromosomes are at index 0 after sorting in ga_step */
+    memcpy(send_buf, ga->population, (size_t)mig * n_genes * sizeof(double));
+
+    int right = (rank + 1) % nprocs;
+    int left  = (rank - 1 + nprocs) % nprocs;
+
+    MPI_Sendrecv(
+        send_buf, (int)(mig * n_genes), MPI_DOUBLE, right, 0,
+        recv_buf, (int)(mig * n_genes), MPI_DOUBLE, left,  0,
+        MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+    /* Overwrite the worst mig slots with received immigrants */
+    double *worst_slot = ga->population + (size_t)(pop_size - mig) * n_genes;
+    memcpy(worst_slot, recv_buf, (size_t)mig * n_genes * sizeof(double));
+
+    /* Re-evaluate immigrants so ga_step can sort them correctly */
+    batch_compute_loss_gpu(
+        worst_slot, mig,
+        ga->fitnesses + (pop_size - mig),
+        ga->target->w, ga->target->h,
+        prof, cfg->loss_type, cfg->wmse_power);
+
+    free(send_buf);
+    free(recv_buf);
+}
+
 /* ══════════════════════════════════════════════════════════════════════════ */
 
 int main(int argc, char **argv)
 {
-    /* Load config — argv[1] overrides the default path */
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &g_world_size);
+    MPI_Comm_rank(MPI_COMM_WORLD, &g_world_rank);
+
+    /* ── Config: rank 0 loads + finalizes, then broadcasts to all ranks ── */
     const char *conf_path = (argc > 1) ? argv[1] : DEFAULT_CONF;
     AppConfig cfg;
     app_config_init(&cfg);
-    mkdir(CONFIG_DIR, 0755);
-    if (app_config_load(&cfg, conf_path) == 0)
-        printf("Config       : loaded from %s\n", conf_path);
-    else
-        printf("Config       : %s not found — using built-in defaults\n", conf_path);
-    app_config_finalize(&cfg);
 
-    /* Build timestamped output directory: output/PREFIX_YYYY-MM-DD_HH-MM-SS */
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-    char out_dir[256], progress_dir[512], log_file[512], save_file[512], final_file[512];
-    snprintf(out_dir, sizeof(out_dir),
-             "output/%s_%04d-%02d-%02d_%02d-%02d-%02d",
-             cfg.run_prefix,
-             t->tm_year+1900, t->tm_mon+1, t->tm_mday,
-             t->tm_hour, t->tm_min, t->tm_sec);
-    snprintf(progress_dir, sizeof(progress_dir), "%s/progress_ppm",      out_dir);
-    snprintf(log_file,     sizeof(log_file),     "%s/run.log",            out_dir);
-    snprintf(save_file,    sizeof(save_file),     "%s/ga_checkpoint.bin", out_dir);
-    snprintf(final_file,   sizeof(final_file),    "%s/final_result.ppm",  out_dir);
+    if (g_world_rank == 0) {
+        mkdir(CONFIG_DIR, 0755);
+        if (app_config_load(&cfg, conf_path) == 0)
+            printf("Config       : loaded from %s\n", conf_path);
+        else
+            printf("Config       : %s not found — using built-in defaults\n", conf_path);
+        app_config_finalize(&cfg);
+    }
+    /* Broadcast the fully finalised struct to every rank */
+    MPI_Bcast(&cfg, sizeof(AppConfig), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    mkdir("output",     0755);
-    mkdir(out_dir,      0755);
-    mkdir(progress_dir, 0755);
+    /* ── Distribute generation budget across islands ─────────────────── *
+     * Each rank runs max_generations/world_size gens so the total work   *
+     * across all nodes equals the configured budget.                      *
+     * Stagnation mode (max_generations == 0) is unaffected.              */
+    int total_max_generations = cfg.max_generations;
+    if (cfg.max_generations > 0 && g_world_size > 1)
+        cfg.max_generations = cfg.max_generations / g_world_size;
+    if (cfg.visualise_every > 0 && g_world_size > 1)
+        cfg.visualise_every = cfg.visualise_every / g_world_size;
 
-    /* Save full hyperparams (compile-time + runtime) into the output folder */
-    char params_file[512];
-    snprintf(params_file, sizeof(params_file), "%s/hyperparams.txt", out_dir);
-    app_config_save(&cfg, params_file);
+    /* ── Output directories and log file (rank 0 only) ────────────────── */
+    char out_dir[256], progress_dir[512], log_file[512];
+    char save_file[512], final_file[512];
 
-    g_log = fopen(log_file, "w");
+    if (g_world_rank == 0) {
+        time_t now = time(NULL);
+        struct tm *t = localtime(&now);
+        snprintf(out_dir, sizeof(out_dir),
+                 "output/%s_%04d-%02d-%02d_%02d-%02d-%02d",
+                 cfg.run_prefix,
+                 t->tm_year+1900, t->tm_mon+1, t->tm_mday,
+                 t->tm_hour, t->tm_min, t->tm_sec);
+        snprintf(progress_dir, sizeof(progress_dir), "%s/progress_ppm",      out_dir);
+        snprintf(log_file,     sizeof(log_file),     "%s/run.log",            out_dir);
+        snprintf(save_file,    sizeof(save_file),    "%s/ga_checkpoint.bin",  out_dir);
+        snprintf(final_file,   sizeof(final_file),   "%s/final_result.ppm",   out_dir);
 
-    Profiler prof;
-    profiler_init(&prof);
+        mkdir("output",     0755);
+        mkdir(out_dir,      0755);
+        mkdir(progress_dir, 0755);
 
-    rng_seed(42);
+        char params_file[512];
+        snprintf(params_file, sizeof(params_file), "%s/hyperparams.txt", out_dir);
+        app_config_save(&cfg, params_file);
 
-    /* Load target image */
-    Image *target = image_read_ppm(cfg.target_file);
-    if (!target) {
-        fprintf(stderr, "Error: could not load '%s'.\n", cfg.target_file);
-        return 1;
+        g_log = fopen(log_file, "w");
     }
 
-    logprintf("Output dir   : %s\n", out_dir);
-    logprintf("Target image : %d x %d (loaded from %s)\n",
-              target->w, target->h, cfg.target_file);
-    logprintf("State vector : length %d  "
-              "(%d triangles x (3 vertices x 2 coords + 4 RGBA))\n",
-              cfg.n_genes, cfg.n_triangles);
-    logprintf("Solver       : GA\n\n");
+    /* ── Target image: rank 0 reads, all ranks receive via Bcast ─────── */
+    int img_w = 0, img_h = 0;
+    Image *target = NULL;
 
-    /* Allocate persistent GPU buffers sized to this image */
+    if (g_world_rank == 0) {
+        target = image_read_ppm(cfg.target_file);
+        if (!target) {
+            fprintf(stderr, "Error: could not load '%s'.\n", cfg.target_file);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+        img_w = target->w;
+        img_h = target->h;
+    }
+    MPI_Bcast(&img_w, 1, MPI_INT,   0, MPI_COMM_WORLD);
+    MPI_Bcast(&img_h, 1, MPI_INT,   0, MPI_COMM_WORLD);
+    if (g_world_rank != 0)
+        target = image_alloc(img_w, img_h);
+    MPI_Bcast(target->data, img_w * img_h * 3, MPI_FLOAT, 0, MPI_COMM_WORLD);
+
+    /* ── Profiler and RNG — each rank gets a distinct seed ───────────── */
+    Profiler prof;
+    profiler_init(&prof);
+    rng_seed((uint64_t)(42 + g_world_rank));
+
+    /* ── CUDA init — each rank uses all GPUs visible on its node ────── */
     cuda_renderer_init(target, &cfg);
-    benchmark_rendering(target, &prof, &cfg);
 
-    /* Run GA — resume from checkpoint if one exists */
+    /* ── Render benchmark — rank 0 only ─────────────────────────────── */
+    if (g_world_rank == 0) {
+        logprintf("Output dir   : %s\n", out_dir);
+        logprintf("Target image : %d x %d (loaded from %s)\n",
+                  img_w, img_h, cfg.target_file);
+        logprintf("State vector : length %d  "
+                  "(%d triangles x (3 vertices x 2 coords + 4 RGBA))\n",
+                  cfg.n_genes, cfg.n_triangles);
+        logprintf("MPI ranks    : %d   (island model)\n", g_world_size);
+        if (total_max_generations > 0 && g_world_size > 1)
+            logprintf("Gen budget   : %d total / %d ranks = %d gens/island\n",
+                      total_max_generations, g_world_size, cfg.max_generations);
+        if (g_world_size > 1 && cfg.migration_interval > 0)
+            logprintf("Migration    : every %d gens, %d chromosome(s) in ring\n",
+                      cfg.migration_interval, cfg.migration_size);
+        logprintf("Solver       : GA\n\n");
+
+        benchmark_rendering(target, &prof, &cfg);
+    }
+
+    /* ── GA loop ─────────────────────────────────────────────────────── */
     double wall_start = profiler_now();
     GA ga;
     ga_init(&ga, target, &prof, &cfg);
-    if (ga_load(&ga, save_file) == 0)
+
+    /* Only rank 0 attempts checkpoint resume so islands stay diverse */
+    if (g_world_rank == 0 && ga_load(&ga, save_file) == 0)
         logprintf("Resumed from %s at generation %d  (best=%.6f)\n\n",
                   save_file, ga.generation, ga.best_loss);
-    else
+    else if (g_world_rank == 0)
         logprintf("No checkpoint found — starting fresh.\n\n");
 
-    while (!ga_is_done(&ga)) {
-        GAStats st = ga_step(&ga);
-
-        if (cfg.max_generations > 0) {
-            /* Hard generation limit active — stagnation is disabled */
-            printf("Gen %6d/%-6d | best=%.6f | avg=%.6f\n",
-                   st.generation, cfg.max_generations,
-                   st.best_loss, st.avg_loss);
-        } else {
-            printf("Gen %6d | best=%.6f | avg=%.6f | stag=%d/%d\n",
-                   st.generation, st.best_loss, st.avg_loss,
-                   ga.stagnation_count,
-                   cfg.stagnation_gens > 0 ? cfg.stagnation_gens : -1);
+    while (1) {
+        /* All ranks must agree on termination before breaking */
+        {
+            int local_done  = ga_is_done(&ga);
+            int global_done = local_done;
+            if (g_world_size > 1)
+                MPI_Allreduce(&local_done, &global_done, 1,
+                              MPI_INT, MPI_LOR, MPI_COMM_WORLD);
+            if (global_done) break;
         }
 
-        if (ga.stagnation_count == 0 && g_log)
-            fprintf(g_log, "Gen %6d | best=%.6f\n", st.generation, st.best_loss);
+        GAStats st = ga_step(&ga);
 
-        if (st.generation % cfg.visualise_every == 0 || ga_is_done(&ga)) {
+        /* Ring migration */
+        if (g_world_size > 1 && cfg.migration_interval > 0 &&
+            st.generation % cfg.migration_interval == 0)
+            do_migration(&ga, &cfg, g_world_rank, g_world_size, &prof);
+
+        /* Progress output — rank 0 only */
+        if (g_world_rank == 0) {
+            if (cfg.max_generations > 0) {
+                printf("[rank 0] Gen %6d/%-6d | best=%.6f | avg=%.6f\n",
+                       st.generation, cfg.max_generations,
+                       st.best_loss, st.avg_loss);
+            } else {
+                printf("[rank 0] Gen %6d | best=%.6f | avg=%.6f | stag=%d/%d\n",
+                       st.generation, st.best_loss, st.avg_loss,
+                       ga.stagnation_count,
+                       cfg.stagnation_gens > 0 ? cfg.stagnation_gens : -1);
+            }
+            if (ga.stagnation_count == 0 && g_log)
+                fprintf(g_log, "Gen %6d | best=%.6f\n",
+                        st.generation, st.best_loss);
+        }
+
+        /* Save snapshot + checkpoint (rank 0, every visualise_every gens) */
+        if (g_world_rank == 0 &&
+            st.generation % cfg.visualise_every == 0) {
             char path[512];
             snprintf(path, sizeof(path),
-                     "%s/progress_ppm/progress_GA_gen%06d.ppm", out_dir, st.generation);
+                     "%s/progress_ppm/progress_GA_gen%06d.ppm",
+                     out_dir, st.generation);
             save_sidebyside(target, GA_CHROM(&ga, st.best_idx), path, &prof, &cfg);
             ga_save(&ga, save_file);
         }
     }
 
-    /* Final output */
+    /* ── Collect global best across all islands ──────────────────────── */
     GAStats final_st = ga_stats(&ga);
-    save_sidebyside(target, GA_CHROM(&ga, final_st.best_idx), final_file, &prof, &cfg);
+    int n_genes = cfg.n_genes;
 
-    double wall_elapsed = profiler_now() - wall_start;
-    logprintf("\nDone. Final loss=%.6f  Saved %s\n", final_st.best_loss, final_file);
-    logprintf("Wall time    : %.2f s  (%d generations)\n",
-              wall_elapsed, final_st.generation);
+    /* Gather each rank's best chromosome and its loss to rank 0 */
+    double *all_chroms  = NULL;
+    double *all_losses  = NULL;
+    if (g_world_rank == 0) {
+        all_chroms = malloc((size_t)g_world_size * n_genes * sizeof(double));
+        all_losses = malloc((size_t)g_world_size * sizeof(double));
+    }
 
-    /* Fix up profiler: optimize bucket should exclude render time */
-    prof.totals[BUCKET_OPTIMIZE] -= prof.totals[BUCKET_RENDER];
+    MPI_Gather(GA_CHROM(&ga, final_st.best_idx), n_genes, MPI_DOUBLE,
+               all_chroms, n_genes, MPI_DOUBLE,
+               0, MPI_COMM_WORLD);
+    MPI_Gather(&final_st.best_loss, 1, MPI_DOUBLE,
+               all_losses, 1, MPI_DOUBLE,
+               0, MPI_COMM_WORLD);
 
-    profiler_report(&prof, g_log);
+    if (g_world_rank == 0) {
+        /* Pick the globally best island */
+        int best_rank = 0;
+        for (int r = 1; r < g_world_size; r++)
+            if (all_losses[r] < all_losses[best_rank])
+                best_rank = r;
 
-    ga_save(&ga, save_file);
+        double global_best_loss = all_losses[best_rank];
+        double *global_best_chrom = all_chroms + (size_t)best_rank * n_genes;
+
+        save_sidebyside(target, global_best_chrom, final_file, &prof, &cfg);
+
+        double wall_elapsed = profiler_now() - wall_start;
+        logprintf("\nDone. Global best loss=%.6f  (from rank %d)  Saved %s\n",
+                  global_best_loss, best_rank, final_file);
+        logprintf("Wall time    : %.2f s  (%d generations)\n",
+                  wall_elapsed, final_st.generation);
+
+        /* Fix up profiler: optimize bucket should exclude render time */
+        prof.totals[BUCKET_OPTIMIZE] -= prof.totals[BUCKET_RENDER];
+        profiler_report(&prof, g_log);
+
+        ga_save(&ga, save_file);
+
+        free(all_chroms);
+        free(all_losses);
+    }
+
+    /* ── Cleanup ─────────────────────────────────────────────────────── */
     ga_destroy(&ga);
     cuda_renderer_free();
     image_free(target);
-
     if (g_log) fclose(g_log);
+
+    MPI_Finalize();
     return 0;
 }

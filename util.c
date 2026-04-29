@@ -252,6 +252,8 @@ void app_config_init(AppConfig *cfg) {
     cfg->loss_type           = LOSS_MSE;
     cfg->wmse_power          = 0.5;
     cfg->num_gpus            = 0;      /* 0 = use all available */
+    cfg->migration_interval  = 100;   /* ring migration every 100 gens */
+    cfg->migration_size      = 1;     /* exchange 1 chromosome per event */
     cfg->visualise_every     = 10000;
     strncpy(cfg->run_prefix,  "run",               sizeof(cfg->run_prefix)  - 1);
     cfg->run_prefix[sizeof(cfg->run_prefix) - 1] = '\0';
@@ -327,7 +329,9 @@ int app_config_load(AppConfig *cfg, const char *path) {
                 cfg->loss_type = LOSS_MSE;
             }
         }
-        else if (!strcmp(key, "WMSE_POWER"))         cfg->wmse_power         = atof(val);
+        else if (!strcmp(key, "WMSE_POWER"))           cfg->wmse_power           = atof(val);
+        else if (!strcmp(key, "MIGRATION_INTERVAL"))   cfg->migration_interval   = atoi(val);
+        else if (!strcmp(key, "MIGRATION_SIZE"))       cfg->migration_size       = atoi(val);
         else if (!strcmp(key, "RUN_PREFIX")) {
             strncpy(cfg->run_prefix, val, sizeof(cfg->run_prefix) - 1);
             cfg->run_prefix[sizeof(cfg->run_prefix) - 1] = '\0';
@@ -368,6 +372,8 @@ void app_config_save(const AppConfig *cfg, const char *path) {
             cfg->loss_type == LOSS_WMSE  ? "wmse"  : "mse");
     fprintf(f, "WMSE_POWER          = %g\n", cfg->wmse_power);
     fprintf(f, "NUM_GPUS            = %d\n", cfg->num_gpus);
+    fprintf(f, "MIGRATION_INTERVAL  = %d\n", cfg->migration_interval);
+    fprintf(f, "MIGRATION_SIZE      = %d\n", cfg->migration_size);
     fprintf(f, "VISUALISE_EVERY     = %d\n", cfg->visualise_every);
     fclose(f);
 }
