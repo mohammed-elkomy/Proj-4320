@@ -66,7 +66,7 @@ make clean && make
 ### 3. Quick single-GPU run
 
 ```bash
-mpirun -np 1 ./app.o config/default.conf
+mpirun -np 1 ./app.o config/sing-gpu.conf
 ```
 
 Output is written to `output/<RUN_PREFIX>_<timestamp>/`:
